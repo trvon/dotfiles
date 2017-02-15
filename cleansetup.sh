@@ -36,7 +36,7 @@ command -v vim >/dev/null 2>&1 ||
 	$P install vim -y;
 }
 
-cat vimrc > ~/.vimrc
+cat configs/vimrc > ~/.vimrc
 
 command -v git >/dev/null 2>&1 || 
 {
@@ -51,3 +51,7 @@ if [ ! -f ~/.gitconfig ] ; then
 	git config --global user.name $email
 fi
 
+# Starts RSA Process
+if [ ! -f ~/.ssh/id_rsa.pub ]; then
+	ssh-keygen -t rsa -b 4096
+fi

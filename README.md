@@ -1,4 +1,4 @@
-# LinuxSetup
+# Linux Scripts
 
 A few of my favorite scripts
 

@@ -31,6 +31,7 @@ fi
 
 clear
 # VIM setup
+# Need to fix installs for Arch
 command -v vim >/dev/null 2>&1 || 
 {
 	echo  -e "\nVim not installed, Installing...\n"

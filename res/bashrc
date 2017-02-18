@@ -10,21 +10,28 @@ fi
 
 # User specific aliases and functions
 
+# Java settings
+PATH=$PATH:/usr/local/bin:/usr/bin
+alias javac-algs4="javac-algs4 -cp ~/algs4/algs4.jar"
+
 # Go Settings
 PATH=$PATH:/usr/local/go/bin:~/workspace/go/bin
 GOPATH=~/workspace/go
 
-# GO Settings
+# Go Settings
 export PATH=$PATH:/usr/local/go/bin
 export GOPATH=~/workspace/go
 
 # Terminal Apperance
-source ~/Depend/liquidprompt/liquidprompt
+source ~/Dependencies/liquidprompt/liquidprompt
 
 # Metasploit
-export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
-export PATH=$PATH:~/Depend/metasploit-framework
+# export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
+# export PATH=$PATH:~/Depend/metasploit-framework
 
+# Vim
+export TERM=xterm-256color
+export VISUAL="vim"
 
 # Usage: hh [option] [arg1] [arg2]...
 # Shell history suggest box:

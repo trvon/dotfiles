@@ -5,7 +5,8 @@ command -v rkhunter 2>&1 ||
 	read answer
 	if [$answer == 'y']; then 
 		echo "installing"
-        dnf install rkhunter
+        # dnf install rkhunter
+		# Need to add check for package managers
 	else 
 		exit 1
 	fi

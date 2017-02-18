@@ -6,22 +6,14 @@ sudo echo -e "\nWhat package manager are you using?\n\n\t(1) Fedora\n\t(2) Debia
 read pac && clear
 #  Sets the package manager variable
 case "$pac" in 
-	"1")
-			P="dnf"
-			;;
-	"2")
-			P="apt-get"
-			;;
-	"3")
-			P="pacman"
-			;;
-	*)
-			echo "Not an option."
-			exit 1
-			;;
+	"1") P="dnf" ;;
+	"2") P="apt-get" ;;
+	"3") P="pacman" ;;
+	*) echo "Not an option." exit 1 ;;
 esac
 
 # Uses these variables for all intitializations
+clear 
 if [ $pac == 'y' ]; then
 	echo -e "\nWhat is you haxer name?"
 	read name

@@ -1,12 +1,11 @@
 # LinuxSetup
 
-Scripts to set up the linux enviroment after a fresh wipe
-
-## Setups up
-- Golang
-- Vim
-- Git
-- RSA 4096
-- Metasploit
+A few of my favorite scripts
 
 ## Work in progress
+### Currently working scripts
+dotfile.sh
+- Backs up files to res folder
+cleansetup.sh
+- Wouldn't encourage use as of now
+

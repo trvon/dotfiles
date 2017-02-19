@@ -2,15 +2,35 @@
 # If you are using the script, please use a repository for 
 # the backing up of your dotfiles
 
-for i in ~/.*
+#backs up configs to res folder
+function backup {
+	for i in ~/.*
+	do
+		if [ -f $i ]; then
+			file=$(basename "${i}" | sed 's/.//' )
+	 		cp $i res/$file
+		fi	
+	done
+}
+# restores saved configs in res
+function restore {
+	for i in res/*
+	do 	
+		base='.'$(basename "${i}")
+		cp i ~/$base
+	done
+}
+
+
+while [ 1 == 1 ]
 do
-	if [ -f $i ]; then
-		file=$(basename "${i}")
-		# Use sed according to the files you would like t
-		# Store
-		file=$(echo $file | sed 's/.//')
-	 	cp $i res/$file
-	fi	
-done
+	echo "Do you want to backup or restore your configs? (r/b)"
+	read P
+	case "$P" in 
+		"r") restore && break ;;
+		"b") backup && break ;;
+		*) echo "try again" ;;
+	esac
+done	
 
 echo "Finished :)"

@@ -10,6 +10,9 @@ fi
 
 # User specific aliases and functions
 
+# tmux
+[[ $TERM != screen* ]] && exec tmux -2
+
 # Java settings
 PATH=$PATH:/usr/local/bin:/usr/bin
 alias javac-algs4="javac-algs4 -cp ~/algs4/algs4.jar"
@@ -25,9 +28,13 @@ export GOPATH=~/workspace/go
 # Terminal Apperance
 source ~/Dependencies/liquidprompt/liquidprompt
 
+# Powerline
+PATH=$PATH:~/.local/lib/python3.6/site-packages/powerline/bindings/bash/powerline.sh
+POWERLINE_BASH_CONTINUATION=1
+POWERLINE_BASH_SELECT=1
+
 # Metasploit
-# export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
-# export PATH=$PATH:~/Depend/metasploit-framework
+ export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
 
 # Vim
 export TERM=xterm-256color

@@ -17,7 +17,7 @@ function restore {
 	for i in res/*
 	do 	
 		base='.'$(basename "${i}")
-		cp i ~/$base
+		cp $i ~/$base
 	done
 }
 

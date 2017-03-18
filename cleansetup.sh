@@ -6,9 +6,9 @@ sudo echo -e "\nWhat package manager are you using?\n\n\t(1) Fedora\n\t(2) Debia
 read pac && clear
 #  Sets the package manager variable
 case "$pac" in 
-	"1") P="dnf" ;;
-	"2") P="apt-get" ;;
-	"3") P="pacman" ;;
+	"1") fedora ;;
+	"2") debian ;;
+	"3") pacman ;;
 	*) echo "Not an option." exit 1 ;;
 esac
 
@@ -20,8 +20,8 @@ if [ $pac == 'y' ]; then
 	echo -e "What is your primary email"
 	read email
 fi
-
 clear
+
 # VIM setup
 # Need to fix installs for Arch
 command -v vim >/dev/null 2>&1 || 
@@ -30,8 +30,8 @@ command -v vim >/dev/null 2>&1 ||
 	$P install vim -y;
 }
 cat configuration/vimrc > ~/.vimrc
-
 clear
+
 #  Git setting up Git
 command -v git >/dev/null 2>&1 || 
 {

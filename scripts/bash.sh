@@ -5,10 +5,15 @@ function goinstall {
 	GOHTML='https://storage.googleapis.com/golang/go$GO.linux-amd64.tar.gz'
 	echo "Downloading Go Version $GO"
 	wget -P ~/Depend -qe --progress=bar $GOHTML
-	GOPLACE="$(ls ~/Depend | grep go)"
+	if [ ! -d ~/Depend/go ] ; then
+		mkdir ~/Depend/go && GOPLACE="~/Depend/go"
+	fi
+	GOTAR="$(ls | grep go)"
 	echo $GOPLACE
-	tar -C /usr/local -xzf ~/Depend/$GOPLACE
-	rm -fr ~/Depend/$GOPLACE
+	tar -C /usr/local -xzf $GOTAR
+	rm -fr $GOTAR
+	echo "GOPATH=/usr/local" >> .bashrc
+	source .bashrc
 	exit
 }
 
@@ -25,19 +30,18 @@ function meta {
 	rvm --install .ruby-version
 	gem install bundler
 	bundle install
+	exit
 }
 
-clear && echo -e "\nWould you like to overwrite the  bashrc file? (y/n)"
+# For debugging
+if [ ! -d ~/Depend ]; then 
+	mkdir ~/Depend
+fi
+
+echo "Would you like to install GO?"
 read choice
 if [ $choice == 'y' ]; then
-	# For debugging
-	if [ ! -d ~/Depend ]; then 
-		mkdir ~/Depend
-	fi
-	cat ../configuration/bashrc > ~/.bashrc
 	goinstall
-	meta
-	git clone -q https://github.com/nojhan/liquidprompt ~/Depend/
 fi
 
 exit;

@@ -9,6 +9,8 @@ function backup {
 	 		cp $i res/$file
 		fi	
 	done
+	cp -r ~/.config/polybar ../res/
+	cp -r ~/.config/i3 ../res/
 }
 
 # restores saved configs in res
@@ -18,14 +20,6 @@ function restore {
 		base='.'$(basename "${i}")
 		cp $i ~/$base
 	done
-}
-
-# Backup I3 config folder files
-function i3_backup {
-	cp -r ~/.config ../res/config
-}
-function dir_search {
-	cd $i
 }
 
 
@@ -40,11 +34,5 @@ do
 		*) echo "try again" ;;
 	esac
 done	
-
-echo -e "\nConfig folder?"
-read 
-if [ p == "y" ] ; then 
-	i3_backup
-fi
 
 echo "Finished :)"

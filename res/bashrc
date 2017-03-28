@@ -16,16 +16,20 @@ fi
 # Java settings
 export PATH=$PATH:/usr/local/bin:/usr/bin
 alias javac-algs4="javac-algs4 -cp ~/algs4/algs4.jar"
+export PATH=$PATH:/usr/lib64/jvm/jdk1.8.0_121/bin
 
 # Go Settings
 export PATH=$PATH:/usr/local/go/bin:~/Work/go/bin
 export GOPATH=~/Work/go
 
+# Scala
+# export PATH=$PATH:/usr/local/scala/bin
+
 # Terminal Apperance
 source ~/Dependencies/liquidprompt/liquidprompt
 
 # Python 2 tempory
-alias python="/usr/bin/python2"
+# alias python="/usr/bin/python2"
 
 # Metasploit
 export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
@@ -33,6 +37,9 @@ export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
 # Vim
 export TERM=xterm-256color
 export VISUAL="vim"
+
+# Cower
+PATH=/home/blackmanta/Dependencies/cower/src/cower-16:$PATH
 
 # Usage: hh [option] [arg1] [arg2]...
 # Shell history suggest box:
@@ -54,4 +61,3 @@ export VISUAL="vim"
 # export PROMPT_COMMAND="history -a; history -n; ${PROMPT_COMMAND}"   # mem/file sync
 # if this is interactive shell, then bind hh to Ctrl-r (for Vi mode check doc)
 # if [[ $- =~ .*i.* ]]; then bind '"\C-r": "\C-a hh -- \C-j"'; fi
-

@@ -6,11 +6,15 @@ function backup {
 	do
 		if [ -f $i ]; then
 			file=$(basename "${i}" | sed 's/.//' )
-	 		cp $i res/$file
+	 		# if [[ $file =~ 'bash_*' ]] || [ $file == esd_auth ] ; then
+			#		continue
+			# fi
+			cp $i ../res/$file
 		fi	
 	done
 	cp -r ~/.config/polybar ../res/
 	cp -r ~/.config/i3 ../res/
+	cp -r ~/.vim ../res/vim
 }
 
 # restores saved configs in res

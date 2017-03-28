@@ -71,7 +71,7 @@ font-1 = unifont:size=10;2
 font-2 = siji:pixelsize=10;3
 font-3 = NerdFont:pixelsize=14;2
 
-modules-left =  i3 xwindow
+modules-left =  i3
 modules-center =
 modules-right = backlight volume pkg wlan vpncheck battery date powermenu
 
@@ -154,14 +154,14 @@ type = internal/fs
 interval = 25
 
 mount-0 = /home
-label-mounted = "%{F#5b5b5b}%{F-} %percentage_used%%"
+label-mounted = "%{F#5b5b5b}%{F-} home-Memory %percentage_used%%"
 
 [module/filesystem-slash]
 type = internal/fs
 interval = 25
 
 mount-0 = /
-label-mounted = "%{F#5b5b5b}%{F-} %percentage_used%%"
+label-mounted = "%{F#5b5b5b}%{F-} root-Memory %percentage_used%%"
 
 ;label-unmounted = %mountpoint%: not mounted
 ;label-unmounted-foreground = ${colors.foreground-alt}

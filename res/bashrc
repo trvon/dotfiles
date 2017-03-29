@@ -31,6 +31,9 @@ source ~/Dependencies/liquidprompt/liquidprompt
 # Python 2 tempory
 # alias python="/usr/bin/python2"
 
+# Polybar
+export PATH="$PATH:~/Dependencies/polybar/build/bin"
+
 # Metasploit
 export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
 

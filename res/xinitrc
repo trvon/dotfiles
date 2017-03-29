@@ -40,5 +40,11 @@ xset dpms 0 0 300
 # Wallpaper
 feh --bg-fill ~/Pictures/wallpaper.jpg
 
+# dunst
+dunst -config ~/.config/dunst/dunstrc &
+
+# compton
+compton --config ~/.config/i3/compton.conf &
+
 exec i3
 

@@ -150,11 +150,11 @@ label-indicator-background = ${colors.secondary}
 label-indicator-underline = ${colors.secondary}
 
 [module/filesystem-home]
-type = internal/fs
-interval = 25
+# type = internal/fs
+# interval = 25
 
-mount-0 = /home
-label-mounted = "%{F#5b5b5b}%{F-} home-Memory %percentage_used%%"
+# mount-0 = /home
+# label-mounted = "%{F#5b5b5b}%{F-} home-Memory %percentage_used%%"
 
 [module/filesystem-slash]
 type = internal/fs

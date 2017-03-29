@@ -36,6 +36,7 @@ set t_Co=256
 set number
 set tabstop=4
 
+" hi Normal guibg=NONE ctermbg=NONE
 " Plugin Configurations 
 
 " Jedi-Vim 

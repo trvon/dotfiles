@@ -11,8 +11,7 @@ set $mod Mod4
 
 # This font is widely installed, provides lots of unicode glyphs, right-to-left
 # text rendering and scalability on retina/hidpi displays (thanks to pango).
-# font pango:DejaVu Sans Mono 8
-font pango:Source Code Pro for Powerline, Bold, 10
+font pango:Hasklug Nerd Font Medium 9
 
 # Before i3 v4.8, we used to recommend this one as the default:
 # font -misc-fixed-medium-r-normal--13-120-75-75-C-70-iso10646-1
@@ -166,6 +165,9 @@ smart_gaps on
 # Allow clicking with the touchpad
 exec --no-startup-id synclient TapButton1=1
 
+# Screenshot
+bindsym --release Mod4+q exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/screenshots'"
+
 # Status bar
 exec_always --no-startup-id $HOME/.config/polybar/launch.sh & 
 
@@ -178,4 +180,4 @@ bindsym XF86MonBrightnessDown exec xbacklight -dec 20 # decrease screen brightne
 # exec --no-startup-id i3-msg 'workspace 2; exec chromium'
 # exec --no-startup-id i3-msg 'workspace 3; exec sublime-text-3; exec xfce4-terminal'
 # exec --no-startup-id i3-msg 'workspace 4; exec slack'
-
+exec --not-startup-id i3-msg 'workspace 4; exec keybase'

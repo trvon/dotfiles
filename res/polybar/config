@@ -161,7 +161,7 @@ type = internal/fs
 interval = 25
 
 mount-0 = /
-label-mounted = "%{F#5b5b5b}%{F-} root-Memory %percentage_used%%"
+label-mounted = "%{F#5b5b5b}%{F-} Memory %percentage_used%%"
 
 ;label-unmounted = %mountpoint%: not mounted
 ;label-unmounted-foreground = ${colors.foreground-alt}

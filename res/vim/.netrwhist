@@ -1,4 +1,0 @@
-let g:netrw_dirhistmax  =10
-let g:netrw_dirhist_cnt =2
-let g:netrw_dirhist_1='/home/blackmanta/Dependencies/i3-configuration-i3conf.v11/i3'
-let g:netrw_dirhist_2='/home/blackmanta/.vim'

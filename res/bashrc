@@ -26,13 +26,10 @@ export GOPATH=~/Work/go
 # export PATH=$PATH:/usr/local/scala/bin
 
 # Terminal Apperance
-source ~/Dependencies/liquidprompt/liquidprompt
+# source ~/Dependencies/liquidprompt/liquidprompt
 
 # Python 2 tempory
 # alias python="/usr/bin/python2"
-
-# Polybar
-export PATH="$PATH:~/Dependencies/polybar/build/bin"
 
 # Metasploit
 export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
@@ -64,3 +61,20 @@ PATH=/home/blackmanta/Dependencies/cower/src/cower-16:$PATH
 # export PROMPT_COMMAND="history -a; history -n; ${PROMPT_COMMAND}"   # mem/file sync
 # if this is interactive shell, then bind hh to Ctrl-r (for Vi mode check doc)
 # if [[ $- =~ .*i.* ]]; then bind '"\C-r": "\C-a hh -- \C-j"'; fi
+#
+# ~/.bashrc
+#
+
+# If not running interactively, don't do anything
+[[ $- != *i* ]] && return
+
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+
+export PS1="\[\033[38;5;12m\][\[$(tput sgr0)\]\[\033[38;5;10m\]\u\[$(tput sgr0)\]\[\033[38;5;12m\]@\[$(tput sgr0)\]\[\033[38;5;7m\]\h\[$(tput sgr0)\]\[\033[38;5;12m\]]\[$(tput sgr0)\]\[\033[38;5;15m\]: \[$(tput sgr0)\]\[\033[38;5;7m\]\w\[$(tput sgr0)\]\[\033[38;5;12m\]>\[$(tput sgr0)\]\[\033[38;5;10m\]\\$\[$(tput sgr0)\]\[\033[38;5;15m\] \[$(tput sgr0)\]"
+
+[ -e "/etc/DIR_COLORS" ] && DIR_COLORS="/etc/DIR_COLORS"
+[ -e "$HOME/.dircolors" ] && DIR_COLORS="$HOME/.dircolors"
+[ -e "$DIR_COLORS" ] || DIR_COLORS=""
+eval "`dircolors -b $DIR_COLORS`"
+

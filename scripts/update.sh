@@ -14,6 +14,7 @@ function backup {
 	done
 	cp -r ~/.config/polybar ../res/
 	cp -r ~/.config/i3 ../res/
+	cp -r ~/.config/dunst ../res/
 }
 
 # restores saved configs in res

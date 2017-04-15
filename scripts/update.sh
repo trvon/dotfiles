@@ -6,24 +6,34 @@ function backup {
 	do
 		if [ -f $i ]; then
 			file=$(basename "${i}" | sed 's/.//' )
-	 		# if [[ $file =~ 'bash_*' ]] || [ $file == esd_auth ] ; then
-			#		continue
-			# fi
+	 		if [[ $file == "bash_"* ]] || [ $file == esd_auth ] || 
+					[[ $file == "zcompdump"* ]] || [[ $file == "viminfo"* ]] || 
+					[[ $file == "Xa"*  ]]; then
+					continue
+			fi
 			cp $i ../res/$file
 		fi	
 	done
+	
+	# Can add check for them later
 	cp -r ~/.config/polybar ../res/
 	cp -r ~/.config/i3 ../res/
 	cp -r ~/.config/dunst ../res/
+	
+	if [ -d ~/.config/sublime-text-3 ] ; then
+		cp -r ~/.config/sublime-text-3 ../res
+	fi
 }
 
 # restores saved configs in res
 function restore {
+	
 	for i in res/*
 	do 	
 		base='.'$(basename "${i}")
 		cp -r $i ~/$base
 	done
+	
 	which vim  > /dev/null	
 	if [ $? -ne 0 ] ; then
 		echo -e "Install Vim you nub!\n"

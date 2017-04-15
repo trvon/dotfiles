@@ -1,0 +1,482 @@
+{
+	"folder_history":
+	[
+	],
+	"last_version": 3126,
+	"last_window_id": 2,
+	"log_indexing": false,
+	"settings":
+	{
+		"new_window_height": 1040.0,
+		"new_window_settings":
+		{
+			"auto_complete":
+			{
+				"selected_items":
+				[
+				]
+			},
+			"build_system_choices":
+			[
+			],
+			"build_varint": "",
+			"command_palette":
+			{
+				"height": 392.0,
+				"last_filter": "",
+				"selected_items":
+				[
+					[
+						"",
+						"CSV: Sort Column (Ascending)"
+					],
+					[
+						"cvs",
+						"CSV: Sort Column (Descending)"
+					],
+					[
+						"vm",
+						"View: Toggle Menu"
+					],
+					[
+						"package control:insta",
+						"Package Control: Install Package"
+					]
+				],
+				"width": 503.0
+			},
+			"console":
+			{
+				"height": 0.0,
+				"history":
+				[
+				]
+			},
+			"distraction_free":
+			{
+				"menu_visible": true,
+				"show_minimap": false,
+				"show_open_files": false,
+				"show_tabs": false,
+				"side_bar_visible": false,
+				"status_bar_visible": false
+			},
+			"file_history":
+			[
+				"/home/blackmanta/work/Mongo/app/web-api.txt",
+				"/home/blackmanta/Downloads/NCL-2016-Round1-bank.csr",
+				"/home/blackmanta/.config/sublime-text-3/Packages/GoSublime/CHANGELOG.md"
+			],
+			"find":
+			{
+				"height": 34.0
+			},
+			"find_in_files":
+			{
+				"height": 0.0,
+				"where_history":
+				[
+				]
+			},
+			"find_state":
+			{
+				"case_sensitive": false,
+				"find_history":
+				[
+				],
+				"highlight": true,
+				"in_selection": false,
+				"preserve_case": false,
+				"regex": false,
+				"replace_history":
+				[
+				],
+				"reverse": false,
+				"show_context": true,
+				"use_buffer2": true,
+				"whole_word": false,
+				"wrap": true
+			},
+			"incremental_find":
+			{
+				"height": 23.0
+			},
+			"input":
+			{
+				"height": 31.0
+			},
+			"menu_visible": true,
+			"output.find_results":
+			{
+				"height": 0.0
+			},
+			"pinned_build_system": "",
+			"replace":
+			{
+				"height": 42.0
+			},
+			"save_all_on_build": true,
+			"select_file":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"select_project":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"select_symbol":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"show_minimap": true,
+			"show_open_files": false,
+			"show_tabs": true,
+			"side_bar_visible": true,
+			"side_bar_width": 150.0,
+			"status_bar_visible": true,
+			"template_settings":
+			{
+			}
+		},
+		"new_window_width": 1920.0
+	},
+	"windows":
+	[
+		{
+			"auto_complete":
+			{
+				"selected_items":
+				[
+					[
+						"ng-re",
+						"ng-repeat\tAngularJS"
+					],
+					[
+						"head",
+						"header\tTag"
+					],
+					[
+						"set",
+						"setOfPaths"
+					],
+					[
+						"has",
+						"hasPath"
+					]
+				]
+			},
+			"buffers":
+			[
+				{
+					"file": "/home/blackmanta/work/Tutorials/Angular/blog/index.html",
+					"settings":
+					{
+						"buffer_size": 347,
+						"encoding": "UTF-8",
+						"line_ending": "Unix"
+					}
+				},
+				{
+					"contents": "var app = angular.module('News', []);\n\napp.controller('MainCtrl', [\n\t$scope.posts = [\n\t\t'post 1',\n\t\t'post 2',\n\t\t'post 3',\n\t\t'post 4'\n\t];\n\n\t'$scope',\n\n\tfunction($scope) {\n\t\t$scope.test = 'Hello world!';\n\t}]);\n",
+					"file": "/home/blackmanta/work/Tutorials/Angular/blog/app.js",
+					"file_size": 208,
+					"file_write_time": 131367459679730698,
+					"settings":
+					{
+						"buffer_size": 208,
+						"encoding": "UTF-8",
+						"line_ending": "Unix"
+					}
+				}
+			],
+			"build_system": "",
+			"build_system_choices":
+			[
+			],
+			"build_varint": "",
+			"command_palette":
+			{
+				"height": 360.0,
+				"last_filter": "color",
+				"selected_items":
+				[
+					[
+						"color",
+						"Color Scheme Editor: Edit current color scheme"
+					],
+					[
+						"packa",
+						"Package Control: Install Package"
+					],
+					[
+						"",
+						"CSV: Sort Column (Ascending)"
+					],
+					[
+						"cvs",
+						"CSV: Sort Column (Descending)"
+					],
+					[
+						"vm",
+						"View: Toggle Menu"
+					],
+					[
+						"package control:insta",
+						"Package Control: Install Package"
+					]
+				],
+				"width": 530.0
+			},
+			"console":
+			{
+				"height": 0.0,
+				"history":
+				[
+				]
+			},
+			"distraction_free":
+			{
+				"menu_visible": true,
+				"show_minimap": false,
+				"show_open_files": false,
+				"show_tabs": false,
+				"side_bar_visible": false,
+				"status_bar_visible": false
+			},
+			"file_history":
+			[
+				"/home/blackmanta/.config/sublime-text-3/Packages/Color Scheme - Default/Blackboard.tmTheme",
+				"/home/blackmanta/work/ParkingSite/pack.json",
+				"/home/blackmanta/work/ParkingSite/package.json",
+				"/home/blackmanta/work/ParkingSite/pack",
+				"/home/blackmanta/work/ParkingSite/index.html",
+				"/home/blackmanta/work/Tutorials/Angular/sources359/index.html",
+				"/home/blackmanta/work/AppointMe/Website/login/register/register.html",
+				"/home/blackmanta/work/AppointMe/Website/login/index.html",
+				"/home/blackmanta/work/AppointMe/Website/login/home/home.html",
+				"/home/blackmanta/work/AppointMe/Website/login/register/register.js",
+				"/home/blackmanta/work/PersonalWebsite/home.html",
+				"/home/blackmanta/work/AppointMe/Website/login/welcome/welcome.html",
+				"/home/blackmanta/work/AppointMe/Website/login/workspace/home.js",
+				"/home/blackmanta/work/AppointMe/Website/login/workspace/home.html",
+				"/home/blackmanta/work/PersonalWebsite/Website/src/styles.css",
+				"/home/blackmanta/work/PersonalWebsite/Website/src/index.html",
+				"/home/blackmanta/work/PersonalWebsite/Website/src/pages/index.html",
+				"/home/blackmanta/work/PersonalWebsite/Website/src/pages/about.html",
+				"/home/blackmanta/work/PersonalWebsite/index.html",
+				"/home/blackmanta/work/Linux-Collection/README.md",
+				"/home/blackmanta/work/PersonalWebsite/css/custom.css",
+				"/home/blackmanta/Class/Algorithm/graph/E23/Digraph.java",
+				"/home/blackmanta/Class/Algorithm/graph/E23/paths.txt",
+				"/home/blackmanta/Documents/build.txt",
+				"/home/blackmanta/Class/Algorithm/Digraph.java",
+				"/home/blackmanta/work/Mongo/app/web-api.txt",
+				"/home/blackmanta/Downloads/NCL-2016-Round1-bank.csr",
+				"/home/blackmanta/.config/sublime-text-3/Packages/GoSublime/CHANGELOG.md"
+			],
+			"find":
+			{
+				"height": 23.0
+			},
+			"find_in_files":
+			{
+				"height": 0.0,
+				"where_history":
+				[
+				]
+			},
+			"find_state":
+			{
+				"case_sensitive": false,
+				"find_history":
+				[
+					"Stack"
+				],
+				"highlight": true,
+				"in_selection": false,
+				"preserve_case": false,
+				"regex": false,
+				"replace_history":
+				[
+				],
+				"reverse": false,
+				"show_context": true,
+				"use_buffer2": true,
+				"whole_word": false,
+				"wrap": true
+			},
+			"groups":
+			[
+				{
+					"selected": 0,
+					"sheets":
+					[
+						{
+							"buffer": 0,
+							"file": "/home/blackmanta/work/Tutorials/Angular/blog/index.html",
+							"semi_transient": false,
+							"settings":
+							{
+								"buffer_size": 347,
+								"regions":
+								{
+								},
+								"selection":
+								[
+									[
+										346,
+										346
+									]
+								],
+								"settings":
+								{
+									"syntax": "Packages/HTML/HTML.sublime-syntax",
+									"tab_size": 2
+								},
+								"translation.x": 0.0,
+								"translation.y": 0.0,
+								"zoom_level": 1.0
+							},
+							"stack_index": 0,
+							"type": "text"
+						},
+						{
+							"buffer": 1,
+							"file": "/home/blackmanta/work/Tutorials/Angular/blog/app.js",
+							"semi_transient": false,
+							"settings":
+							{
+								"buffer_size": 208,
+								"regions":
+								{
+								},
+								"selection":
+								[
+									[
+										85,
+										85
+									]
+								],
+								"settings":
+								{
+									"syntax": "Packages/JavaScript/JavaScript.sublime-syntax"
+								},
+								"translation.x": 0.0,
+								"translation.y": 0.0,
+								"zoom_level": 1.0
+							},
+							"stack_index": 1,
+							"type": "text"
+						}
+					]
+				}
+			],
+			"incremental_find":
+			{
+				"height": 23.0
+			},
+			"input":
+			{
+				"height": 31.0
+			},
+			"layout":
+			{
+				"cells":
+				[
+					[
+						0,
+						0,
+						1,
+						1
+					]
+				],
+				"cols":
+				[
+					0.0,
+					1.0
+				],
+				"rows":
+				[
+					0.0,
+					1.0
+				]
+			},
+			"menu_visible": true,
+			"output.find_results":
+			{
+				"height": 0.0
+			},
+			"pinned_build_system": "",
+			"position": "0,0,0,0,0,9,542,1911,1051,1920,1080",
+			"project": "",
+			"replace":
+			{
+				"height": 42.0
+			},
+			"save_all_on_build": true,
+			"select_file":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"select_project":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"select_symbol":
+			{
+				"height": 0.0,
+				"last_filter": "",
+				"selected_items":
+				[
+				],
+				"width": 0.0
+			},
+			"selected_group": 0,
+			"settings":
+			{
+			},
+			"show_minimap": true,
+			"show_open_files": false,
+			"show_tabs": true,
+			"side_bar_visible": true,
+			"side_bar_width": 150.0,
+			"status_bar_visible": true,
+			"template_settings":
+			{
+			},
+			"window_id": 1,
+			"workspace_name": ""
+		}
+	],
+	"workspaces":
+	{
+		"recent_workspaces":
+		[
+		]
+	}
+}

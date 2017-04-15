@@ -23,7 +23,7 @@ export TERM=xterm-256color
 export VISUAL="vim"
 
 # Antigen
-source .oh-my-zsh/antigen.zsh
+# source .oh-my-zsh/antigen.zsh
 
 # Polybar
 export PATH="$PATH:~/Dependencies/polybar/build/bin"

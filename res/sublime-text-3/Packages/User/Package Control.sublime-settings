@@ -1,0 +1,28 @@
+{
+	"bootstrapped": true,
+	"in_process_packages":
+	[
+	],
+	"installed_packages":
+	[
+		"All Autocomplete",
+		"AngularJS",
+		"AngularZen",
+		"AutocompletionFuzzy",
+		"ClangAutoComplete",
+		"Color Scheme - Vintage Terminal",
+		"ColorSchemeEditor",
+		"ColorSchemeSelector",
+		"CSV",
+		"Expression",
+		"GoSublime",
+		"JoinAssignment",
+		"LocalVariable",
+		"Method",
+		"Package Control",
+		"Statement",
+		"SummitLinter",
+		"Theme - Brogrammer",
+		"Tron Color Scheme"
+	]
+}

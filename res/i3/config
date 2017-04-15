@@ -170,7 +170,7 @@ smart_gaps on
 exec --no-startup-id synclient TapButton1=1
 
 # Screenshot
-bindsym --release Mod4+q exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/screenshots'"
+bindsym --release Mod4+1 exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/screenshots'"
 
 # Status bar
 exec_always --no-startup-id $HOME/.config/polybar/launch.sh & 

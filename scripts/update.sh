@@ -19,10 +19,12 @@ function backup {
 	cp -r ~/.config/polybar ../res/
 	cp -r ~/.config/i3 ../res/
 	cp -r ~/.config/dunst ../res/
-	
-	if [ -d ~/.config/sublime-text-3 ] ; then
-		cp -r ~/.config/sublime-text-3 ../res
-	fi
+	# Need my fonts
+	cp -r ~/.local/share/fonts/ ../res
+
+	# if [ -d ~/.config/sublime-text-3 ] ; then
+	# 	cp -r ~/.config/sublime-text-3 ../res
+	# fi
 }
 
 # restores saved configs in res
@@ -30,8 +32,12 @@ function restore {
 	
 	for i in res/*
 	do 	
-		base='.'$(basename "${i}")
-		cp -r $i ~/$base
+		# Copies files to home
+		if [ -f $1 ]; then 
+			base='.'$(basename "${i}")
+			cp -r $i ~/$base
+		fi
+
 	done
 	
 	which vim  > /dev/null	
@@ -42,6 +48,22 @@ function restore {
 	# rm -fr ~/.vim/bundle/*
 	git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
 	vim +PluginInstall +qall
+	
+	# Copy directories
+	# For configs
+	if [ ! -d ~/.config ]; then
+		mkdir ~/.config
+	fi
+	# For founts
+	if [ ! -d ~/.local/share ]; then
+		mkdir -p ~/.local/share
+	fi
+	
+	# May need a better way of restoring when my things are backed up
+	cp -r ../res/polybar ~/.config
+	cp -r ../res/i3 ~/.config
+	cp -r ../res/dunst ~/.config
+	cp -r ../res/fonts ~/.local/share/
 }
 
 

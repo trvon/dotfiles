@@ -29,7 +29,6 @@ function backup {
 
 # restores saved configs in res
 function restore {
-	
 	for i in res/*
 	do 	
 		# Copies files to home
@@ -37,16 +36,18 @@ function restore {
 			base='.'$(basename "${i}")
 			cp -r $i ~/$base
 		fi
-
 	done
 	
-	which vim  > /dev/null	
-	if [ $? -ne 0 ] ; then
-		echo -e "Install Vim you nub!\n"
-		sudo pacman -S vim 
-	fi
+	# which vim  > /dev/null	
+	# if [ $? -ne 0 ] ; then
+	# 	echo -e "Install Vim you nub!\n"
+	#	sudo pacman -S vim 
+	# fi
 	# rm -fr ~/.vim/bundle/*
-	git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
+	if [ ! -d ~/.vim/bundle ]; then
+        mkdir -p ~/.vim/bundle
+    fi
+    git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
 	vim +PluginInstall +qall
 	
 	# Copy directories

@@ -11,16 +11,16 @@ function backup {
 					[[ $file == "Xa"*  ]]; then
 					continue
 			fi
-			cp $i ../res/$file
+			cp $i ../dotfiles/$file
 		fi	
 	done
 	
 	# Can add check for them later
-	cp -r ~/.config/polybar ../res/
-	cp -r ~/.config/i3 ../res/
-	cp -r ~/.config/dunst ../res/
+	cp -r ~/.config/polybar ../dotfiles/
+	cp -r ~/.config/i3 ../dofiles/
+	cp -r ~/.config/dunst ../dotfiles/
 	# Need my fonts
-	cp -r ~/.local/share/fonts/ ../res
+	cp -r ~/.local/share/fonts/ ../dotfiles
 
 	# if [ -d ~/.config/sublime-text-3 ] ; then
 	# 	cp -r ~/.config/sublime-text-3 ../res
@@ -29,12 +29,12 @@ function backup {
 
 # restores saved configs in res
 function restore {
-	for i in res/*
+	for i in dotfiles/*
 	do 	
 		# Copies files to home
 		if [ -f $1 ]; then 
 			base='.'$(basename "${i}")
-			cp -r $i ~/$base
+			cp $i ~/$base
 		fi
 	done
 	
@@ -45,9 +45,9 @@ function restore {
 	# fi
 	# rm -fr ~/.vim/bundle/*
 	if [ ! -d ~/.vim/bundle ]; then
-        mkdir -p ~/.vim/bundle
-    fi
-    git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
+        	mkdir -p ~/.vim/bundle
+    	fi
+    	git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
 	vim +PluginInstall +qall
 	
 	# Copy directories
@@ -61,10 +61,10 @@ function restore {
 	fi
 	
 	# May need a better way of restoring when my things are backed up
-	cp -r ../res/polybar ~/.config
-	cp -r ../res/i3 ~/.config
-	cp -r ../res/dunst ~/.config
-	cp -r ../res/fonts ~/.local/share/
+	cp -r ../dotfiles/polybar ~/.config
+	cp -r ../dotfiles/i3 ~/.config
+	cp -r ../dotfiles/dunst ~/.config
+	cp -r ../dotfiles/fonts ~/.local/share/
 }
 
 

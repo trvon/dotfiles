@@ -17,7 +17,7 @@ function backup {
 	
 	# Can add check for them later
 	cp -r ~/.config/polybar ../dotfiles/
-	cp -r ~/.config/i3 ../dofiles/
+	cp -r ~/.config/i3 ../dotfiles/
 	cp -r ~/.config/dunst ../dotfiles/
 	# Need my fonts
 	cp -r ~/.local/share/fonts/ ../dotfiles

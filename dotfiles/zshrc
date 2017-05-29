@@ -15,9 +15,6 @@ export PATH=$PATH:/usr/lib64/jvm/jdk1.8.0_121/bin
 export PATH=$PATH:/usr/local/go/bin:~/Work/go/bin
 export GOPATH=~/Work/go
 
-# Metasploit
-export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
-
 # Vim
 export TERM=xterm-256color
 export VISUAL="vim"
@@ -25,17 +22,12 @@ export VISUAL="vim"
 # Antigen
 # source .oh-my-zsh/antigen.zsh
 
-# Polybar
-export PATH="$PATH:~/Dependencies/polybar/build/bin"
-
-# Python 2 tempory
-export PYTHON=/usr/bin/python2
-
 # Set name of the theme to load. Optionally, if you set this to "random"
 # it'll load a random theme each time that oh-my-zsh is loaded.
 # See https://github.com/robbyrussell/oh-my-zsh/wiki/Themes
-ZSH_THEME="powerlevel9k/powerlevel9k"
+ZSH_THEME="gentoo"
 export TERM=xterm-256color
+
 # Uncomment the following line to use case-sensitive completion.
 # CASE_SENSITIVE="true"
 
@@ -111,7 +103,7 @@ export SSH_KEY_PATH="~/.ssh/rsa_id"
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
-export PATH=~/work/MongoLaunchPad:$PATH
-export MONGO=$(find ~/ -iname MongoLaunchPad)
-# Cower Package Manager
-export PATH=~/Dependencies/cower/src/cower-16:$PATH
+
+# MongoLaunchPad Settings
+PATH=/home/blackmanta/bin:/usr/local/bin:/home/blackmanta/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/lib/jvm/default/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl:/usr/local/bin:/usr/lib64/jvm/jdk1.8.0_121/bin:/usr/local/go/bin:/home/blackmanta/Work/go/bin:/usr/local/bin:/usr/lib64/jvm/jdk1.8.0_121/bin:/usr/local/go/bin:/home/blackmanta/Work/go/bin:/home/blackmanta/Work/MongoLaunchPad
+export MONGO=/home/blackmanta/Work/MongoLaunchPad

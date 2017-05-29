@@ -149,7 +149,7 @@ label-indicator-padding = 2
 label-indicator-background = ${colors.secondary}
 label-indicator-underline = ${colors.secondary}
 
-[module/filesystem-home]
+#[module/filesystem-home]
 # type = internal/fs
 # interval = 25
 

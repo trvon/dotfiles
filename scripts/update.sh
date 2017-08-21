@@ -27,9 +27,15 @@ function backup {
 	# fi
 }
 
+# Bash_it
+function bash_install {
+	git clone --depth=1 https://github.com/Bash-it/bash-it.git ~/.bash_it
+	sh ~/.bash_it/install.sh
+}	
+
 # restores saved configs in res
 function restore {
-	for i in dotfiles/*
+	for i in ../dotfiles/*
 	do 	
 		# Copies files to home
 		if [ -f $1 ]; then 
@@ -46,10 +52,19 @@ function restore {
 	# rm -fr ~/.vim/bundle/*
 	if [ ! -d ~/.vim/bundle ]; then
         	mkdir -p ~/.vim/bundle
+		git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
     	fi
-    	git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
 	vim +PluginInstall +qall
 	
+	# Bash-it
+	echo "Would you like to install bash-it? (Y/n)"
+	read prompt
+	case "$prompt" in 
+		y|Y) bash_install ;;
+		*) echo "Proceeding ..."
+	esac
+
+
 	# Copy directories
 	# For configs
 	if [ ! -d ~/.config ]; then
@@ -64,7 +79,6 @@ function restore {
 	cp -r ../dotfiles/polybar ~/.config
 	cp -r ../dotfiles/i3 ~/.config
 	cp -r ../dotfiles/dunst ~/.config
-	cp -r ../dotfiles/fonts ~/.local/share/
 }
 
 
@@ -81,3 +95,4 @@ do
 done	
 
 echo "Finished :)"
+

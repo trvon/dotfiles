@@ -4,7 +4,7 @@
 function backup {
 	for i in ~/.*
 	do
-		if [ -f $i ]; then
+		if [[ -f $i ]]; then
 			file=$(basename "${i}" | sed 's/.//' )
 	 		if [[ $file == "bash_"* ]] || [ $file == esd_auth ] || 
 					[[ $file == "zcompdump"* ]] || [[ $file == "viminfo"* ]] || 
@@ -16,12 +16,6 @@ function backup {
 	done
 	
 	# Can add check for them later
-	cp -r ~/.config/polybar ../dotfiles/
-	cp -r ~/.config/i3 ../dotfiles/
-	cp -r ~/.config/dunst ../dotfiles/
-	# Need my fonts
-	cp -r ~/.local/share/fonts/ ../dotfiles
-
 	# if [ -d ~/.config/sublime-text-3 ] ; then
 	# 	cp -r ~/.config/sublime-text-3 ../res
 	# fi

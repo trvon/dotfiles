@@ -47,4 +47,7 @@ dunst -config ~/.config/dunst/dunstrc &
 # compton
 compton --config ~/.config/i3/compton.conf &
 
+# Network Manager
+nm-applet &
+
 exec i3

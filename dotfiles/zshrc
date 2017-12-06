@@ -107,3 +107,6 @@ export SSH_KEY_PATH="~/.ssh/rsa_id"
 # MongoLaunchPad Settings
 PATH=/home/blackmanta/bin:/usr/local/bin:/home/blackmanta/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/lib/jvm/default/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl:/usr/local/bin:/usr/lib64/jvm/jdk1.8.0_121/bin:/usr/local/go/bin:/home/blackmanta/Work/go/bin:/usr/local/bin:/usr/lib64/jvm/jdk1.8.0_121/bin:/usr/local/go/bin:/home/blackmanta/Work/go/bin:/home/blackmanta/Work/MongoLaunchPad
 export MONGO=/home/blackmanta/Work/MongoLaunchPad
+
+# Add RVM to PATH for scripting. Make sure this is the last PATH variable change.
+export PATH="$PATH:$HOME/.rvm/bin"

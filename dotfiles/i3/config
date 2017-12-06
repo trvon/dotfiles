@@ -24,7 +24,7 @@ font pango:Hasklug Nerd Font Medium 9
 floating_modifier $mod
 
 # start a terminal
-bindsym $mod+Return exec xfce4-terminal
+bindsym $mod+Return exec urxvt
 
 # kill focused window
 bindsym $mod+Shift+q kill
@@ -42,7 +42,7 @@ bindsym XF86AudioLowerVolume exec --no-startup-id pactl set-sink-volume @DEFAULT
 bindsym XF86AudioMute exec --no-startup-id pactl set-sink-mute @DEFAULT_SINK@ toggle
 
 # Screen lock i3lock-fancy-git
-bindsym $mod+z exec i3lock -p win -i /home/blackmanta/Pictures/lock.png -u -f 
+bindsym $mod+z exec i3lock -n -p win -i /home/blackmanta/Pictures/lock.png -u -f 
 # There also is the (new) i3-dmenu-desktop which only displays applications
 # shipping a .desktop file. It is a wrapper around dmenu, so you need that
 # bindsym $mod+d exec --no-startup-id i3-dmenu-desktop
@@ -169,7 +169,7 @@ smart_gaps on
 exec --no-startup-id synclient TapButton1=1
 
 # Screenshot
-bindsym --release Mod4+c exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/screenshots'"
+bindsym --release Mod4+c exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/Screenshots'"
 
 # Screen brightness
 bindsym XF86MonBrightnessUp exec xbacklight -inc 20 # increase screen brightness

@@ -1,0 +1,2 @@
+source ~/peda/peda.py
+source /home/blackmanta/.gdbinit-gef.py

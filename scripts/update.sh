@@ -14,11 +14,6 @@ function backup {
 			cp -r $i ../dotfiles/$file
 		fi	
 	done
-	
-	# Can add check for them later
-	cp -r ~/.config/polybar ../dotfiles/
-	cp -r ~/.config/i3 ../dotfiles/
-	cp -r ~/.config/dunst ../dotfiles/
 }
 
 # Bash_it

@@ -33,13 +33,13 @@ fi
 
 [ -f ~/.xprofile ] && source ~/.xprofile
 
-# Turns monitor off while idle
 xset +dpms 
 xset dpms 0 0 300
 # sudo powertop --auto-tune &
+xrdb -q
 
 # Wallpaper
-feh --bg-fill ~/Pictures/wallpaper.jpg &
+feh --bg-fill ~/Pictures/wallpaper.jpg
 
 # dunst
 dunst -config ~/.config/dunst/dunstrc &
@@ -51,3 +51,4 @@ compton --config ~/.config/i3/compton.conf &
 nm-applet &
 
 exec i3
+

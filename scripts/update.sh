@@ -69,7 +69,7 @@ function restore {
 while [ 1 == 1 ]
 do
 	echo "Do you want to backup or restore your configs? (r/b)"
-	read P
+	read PP
 	case "$P" in 
 		"r") restore && break ;;
 		"b") backup && break ;;

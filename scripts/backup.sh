@@ -1,10 +1,60 @@
 # @Author: Elrey and Blackmanta
 #!/bin/bash
 
+#################################################
+# If running the script from a keybinding ex. i3
+# backing up and restore currently looks like:
+#
+#   You'll need zenity to be able to run script
+#   from key binding
+#
+# 	(backup)  ... exec ./backup.sh b
+#   (restore) ... exec ./backup.sh r
+#################################################
+
 # Fancy Colors
 red='\e[1;31m'
 blue='\e[1;34m'
 white='\e[1;37m'
+
+# Checks for Root
+if [ "$EUID" -ne 0 ]; then
+	USER=$(whoami)
+else
+	USER=$SUDO_USER
+fi
+
+# If running as keybinding grabs password
+if [ ! -z $1 ]; then 
+	exist=$(command -v zenity)
+	# Checks if zenity is installed
+	if [ -z $exist ] ; then
+		notify-send "Install zenity"
+		exit 1
+	fi
+	
+	# Adding so script can be added to a keybinding
+	password=$(zenity --password)
+	while : ; do
+		notify-send "Wrong password entered... Try again!"
+		password=$(zenity --password)
+		status=$(echo $password | sudo -v)
+	    if [ -z $status ] ; then
+		   break
+		fi	   
+	done
+# If running as script grabs password
+else
+	while : ; do
+		echo "[sudo] password for $USER"
+		read -s -t 5 password
+	
+		status=$(echo $password | sudo -v)
+		if [ -z $status ] ; then
+	   		break
+		fi
+	done	
+fi
 
 # Function for backing up system
 function backup {
@@ -17,12 +67,6 @@ function backup {
 	YEAR=$(date -d "$D" '+%Y')
 	
 	
-	# Checks for Root
-	if [ "$EUID" -ne 0 ]; then
-		USER=whoami
-	else
-		USER=$SUDO_USER
-	fi
 	
 	# Backup directory
 	BACKUP_DIR=/run/media/blck/backups
@@ -48,15 +92,24 @@ function backup {
 		ls | awk -F- '{print $3}' | sort | sed -n 1p | xargs -I {} rm -fr *{}* 
 	fi
 	
-	sudo rsync -aAXv --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/home/$USER/.cache/*","/mnt/"} / $BACKUP_FILE > $LOG
-	sudo tar czvf $BACKUP_FILE.tgz $BACKUP_FILE >> $LOG
-	sudo rm -rf $BACKUP_FILE
-	sudo sha256sum $BACKUP_FILE > $BACKUPFILE.hash
+	notify-send "Starting Rsync..."	
+	echo $password | sudo rsync -aAXv --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/home/$USER/.cache/*","/home/$USER/.mozilla/*"} / $BACKUP_FILE > $LOG
+	notify-send "Compressing backup..."	
+	echo $password | sudo tar czvf $BACKUP_FILE.tgz $BACKUP_FILE >> $LOG
+	notify-send "Cleaning up..."	
+	echo $password | sudo rm -rf $BACKUP_FILE
+	echo $password | sudo sha256sum $BACKUP_FILE > $BACKUPFILE.hash
+	
+	# Just in case
+	password="password"
 }
 
 # Will need to store hashes in a smart manner for checking
 function restore {
 	echo -e $white "Not implemented"
+	# Select backup to restore from	
+	# Checksum compare
+
 }
 
 if [ $1 -z ]; then

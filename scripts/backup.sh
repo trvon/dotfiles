@@ -1,3 +1,4 @@
+# @Author: Elrey and Blackmanta
 #!/bin/bash
 
 # Set maximum for backup's PER directory

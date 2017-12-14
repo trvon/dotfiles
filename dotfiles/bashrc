@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Path to the bash it configuration
-export BASH_IT="/home/blackmanta/.bash_it"
+export BASH_IT="/home/manta/.bash_it"
 
 # Lock and Load a custom theme file
 # location /.bash_it/themes/
@@ -50,19 +50,3 @@ export SCM_CHECK=true
 
 # Load Bash It
 source "$BASH_IT"/bash_it.sh
-
-# GoLang
-export PATH=$PATH:/usr/local/go/bin
-
-# Lazy Git
-function lazygit() {
-	git add .
-	git commit -a -m $1
-	git push
-}
-
-
-# Add RVM to PATH for scripting. Make sure this is the last PATH variable change.
-export PATH="$PATH:$HOME/.rvm/bin"
-source /home/blackmanta/.rvm/scripts/rvm
-export VISUAL="vim"

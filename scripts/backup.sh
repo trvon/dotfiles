@@ -13,7 +13,7 @@ function backup {
 	
 	# Backups sorted in folders by month
 	DAY=$(date -d "$D" '+%d')
-	MONTH=$(date + '%B' | cut -c 1-3)
+	MONTH=$(date +'%B' | cut -c 1-3)
 	YEAR=$(date -d "$D" '+%Y')
 	
 	
@@ -45,7 +45,7 @@ function backup {
 	## This is dump logic and probally should be edited when backups
 	## are needed to be removed
 	if [ "$COUNT" -gt "$MAX" ]; then
-		ls | awk -F- '{print $3}' | sort | sed -n 1p | xargs -I {} rm -fr *${}* 
+		ls | awk -F- '{print $3}' | sort | sed -n 1p | xargs -I {} rm -fr *{}* 
 	fi
 	
 	sudo rsync -aAXv --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/home/$USER/.cache/*","/mnt/"} / $BACKUP_FILE > $LOG

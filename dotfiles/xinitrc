@@ -38,12 +38,17 @@ xset dpms 0 0 300
 # sudo powertop --auto-tune &
 xrdb -q
 
+# Wallpaper
+feh --bg-fill ~/Pictures/wallpaper.jpg
+
 # dunst
 dunst -config ~/.config/dunst/dunstrc &
 
 # compton
 compton --config ~/.config/i3/compton.conf &
 
-xrandr --output DVI-D-1 --mode 1920x1080 --pos 3136x2560 --rotate normal --output HDMI-1 --mode 1920x1080 --pos 1216x2560 --rotate normal --output DP-2 --mode 2560x1440 --pos 2560x0 --rotate left --output DP-1 --primary --mode 2560x1440 --pos 0x1120 --rotate normal --output HDMI-2 --off
+# Network Manager
+nm-applet &
 
 exec i3
+

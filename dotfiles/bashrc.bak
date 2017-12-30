@@ -1,11 +1,9 @@
-#!/usr/bin/env bash
-
 # Path to the bash it configuration
 export BASH_IT="/home/blackmanta/.bash_it"
 
 # Lock and Load a custom theme file
 # location /.bash_it/themes/
-export BASH_IT_THEME='sexy'
+export BASH_IT_THEME='binaryanomaly'
 
 # (Advanced): Change this to the name of your remote repo if you
 # cloned bash-it with a remote other than origin such as `bash-it`.
@@ -25,6 +23,10 @@ export TODO="t"
 
 # Set this to false to turn off version control status checking within the prompt for all themes
 export SCM_CHECK=true
+
+# Go
+export PATH=$PATH:/usr/local/go/bin
+
 
 # Set Xterm/screen/Tmux title with only a short hostname.
 # Uncomment this (or set SHORT_HOSTNAME to something else),
@@ -50,19 +52,3 @@ export SCM_CHECK=true
 
 # Load Bash It
 source "$BASH_IT"/bash_it.sh
-
-# GoLang
-export PATH=$PATH:/usr/local/go/bin
-
-# Lazy Git
-function lazygit() {
-	git add .
-	git commit -a -m $1
-	git push
-}
-
-
-# Add RVM to PATH for scripting. Make sure this is the last PATH variable change.
-export PATH="$PATH:$HOME/.rvm/bin"
-source /home/blackmanta/.rvm/scripts/rvm
-export VISUAL="vim"

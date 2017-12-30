@@ -1,5 +1,5 @@
-# @Author: Elrey and Blackmanta
 #!/bin/bash
+# @Author: Elrey and Blackmanta
 
 #################################################
 # If running the script from a keybinding ex. i3
@@ -25,10 +25,10 @@ else
 fi
 
 # If running as keybinding grabs password
-if [ ! -z $1 ]; then 
+if [ ! -z "$1" ]; then 
 	exist=$(command -v zenity)
 	# Checks if zenity is installed
-	if [ -z $exist ] ; then
+	if [ -z "$exist" ] ; then
 		notify-send "Install zenity"
 		exit 1
 	fi
@@ -38,7 +38,7 @@ if [ ! -z $1 ]; then
 	while : ; do
 		notify-send "Wrong password entered... Try again!"
 		password=$(zenity --password)
-		status=$(echo $password | sudo -v)
+		status=$(echo "$password" | sudo -v)
 	    if [ -z $status ] ; then
 		   break
 		fi	   
@@ -66,8 +66,6 @@ function backup {
 	MONTH=$(date +'%B' | cut -c 1-3)
 	YEAR=$(date -d "$D" '+%Y')
 	
-	
-	
 	# Backup directory
 	BACKUP_DIR=/run/media/blck/backups
 	
@@ -92,13 +90,13 @@ function backup {
 		ls | awk -F- '{print $3}' | sort | sed -n 1p | xargs -I {} rm -fr *{}* 
 	fi
 	
-	notify-send "Starting Rsync..."	
-	echo $password | sudo rsync -aAXv --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/home/$USER/.cache/*","/home/$USER/.mozilla/*"} / $BACKUP_FILE > $LOG
+	notify-send "Starting Rsync..."	P
+	echo $password | sudo rsync -aAXv --exclude={"/run","/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/home/$USER/.cache/*","/home/$USER/.mozilla/*"} / $BACKUP_FILE > $LOG
 	notify-send "Compressing backup..."	
 	echo $password | sudo tar czvf $BACKUP_FILE.tgz $BACKUP_FILE >> $LOG
 	notify-send "Cleaning up..."	
 	echo $password | sudo rm -rf $BACKUP_FILE
-	echo $password | sudo sha256sum $BACKUP_FILE > $BACKUPFILE.hash
+	echo $password | sudo sha256sum $BACKUP_FILE.tgz > $BACKUPFILE.hash
 	
 	# Just in case
 	password="password"
@@ -112,7 +110,7 @@ function restore {
 
 }
 
-if [ $1 -z ]; then
+if [ -z $1 ]; then
 	echo -e "\n"
 	echo -e $blue "############################################"
 	echo -e $blue	"|  Would you like to restore from previous |"  
@@ -128,4 +126,4 @@ fi
 case $choice in
 	'r') restore ;;
 	*) backup ;;
-esac
+esa

@@ -31,7 +31,7 @@ set ignorecase
 set smartcase
 colors CandyPaper
 set t_Co=256
-set number
+set number relativenumber 
 set tabstop=4
 
 " Key Bindings
@@ -54,7 +54,6 @@ let g:Powerline_symbols='fancy'
 " NerdTree settings
 map <C-t> :NERDTreeToggle<CR>
 
-"
 " Java Settings
 autocmd FileType java setlocal omnifunc=javacomplete#Complete
 nmap <F4> <Plug>(JavaComplete-Imports-AddSmart)

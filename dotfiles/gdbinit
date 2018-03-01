@@ -1,2 +1,4 @@
 source ~/peda/peda.py
 source /home/blackmanta/.gdbinit-gef.py
+# source /usr/lib/python3.6/site-packages/voltron/entry.py
+

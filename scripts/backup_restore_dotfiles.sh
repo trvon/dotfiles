@@ -37,18 +37,12 @@ function restore {
 			base='.'$(basename "${i}")
 			cp $i ~/$base
 		elif [ -d $1 ]; then
-			cp $! ~/.config
+			cp $i ~/.config
 		fi
 	done
 	
 	# Need to include an OS check that install's programs
 	# using local package manager
-
-	# which vim  > /dev/null	
-	# if [ $? -ne 0 ] ; then
-	#	echo -e "Install Vim you nub!\n"
-	#	sudo pacman -S vim 
-	# fi
 	
 	if [ ! -d ~/.vim/bundle ]; then
         	mkdir -p ~/.vim/bundle

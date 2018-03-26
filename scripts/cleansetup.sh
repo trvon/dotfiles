@@ -26,8 +26,7 @@ command -v vim >/dev/null 2>&1 ||
 	echo  -e "\nVim not installed, Installing...\n"
 	sudo Pacman -S vim -y
 }
-cat ../res/vimrc > ~/.vimrc
-clear
+cat ../dotfiles/vimrc > ~/.vimrc
 
 #  Git setting up Git
 command -v git >/dev/null 2>&1 || 
@@ -56,6 +55,6 @@ fi
 clear
 
 # bash initialization with resources
-sh bash.sh
+sh ./backup_restore_dotfiles.sh
 
 echo -e "\nAll setup configurations are complete, enjoy linux :)\n"

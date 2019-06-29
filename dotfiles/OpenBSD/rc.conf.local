@@ -1,0 +1,7 @@
+apmd_flags="-C"
+xenodm_flags=""
+ntpd_flags=""
+powerd_enable="YES"
+powerd_flags="-a hiadaptive -b adaptive -i 75 -r 85 -p 500"
+performance_cx_lowest="Cmax"
+economy_cx_lowest="Cmax"

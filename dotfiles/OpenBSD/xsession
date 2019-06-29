@@ -1,0 +1,12 @@
+export ENV=$HOME/.bashrc
+# xsetroot -solid grey &
+# Disable X beep
+xset b off
+
+# Enable Touchpad tap and vertical edge scroll
+synclient TapButton1=1
+synclient VertEdgeScroll=1
+xidle &
+feh --bg-fill /home/trevon/Pictures/wallpaper.jpg &
+xset +fp /usr/local/share/fonts/noto
+exec /usr/local/bin/i3

@@ -1,0 +1,14 @@
+~/.config/syncthing/index-v0.14.0.db
+~/.config/syncthing/config.xml
+~/.config/syncthing/cert.pem
+~/.config/syncthing/key.pem
+~/Sans
+~/Wireguard
+~/vmware
+~/OS
+~/Downloads
+~/Resources
+~/.ssh
+Malware*
+!notable
+~/.*

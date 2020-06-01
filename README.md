@@ -1,9 +1,12 @@
 # Linux Collection
-##### This is a work in progess
-		Here lies some of my configurations (dotfile) and 
-		scripts I made that I think are useful
 
-### Useful Working Scripts
-		update.sh - You have the option to back up your date files, located 
-		in your home directory (Also backups up my favorite directories from .config) 
-		or restore the files inside of the dotfiles folder to your home directory.
+This repo in no ways is complete. I try to backup my configurations as much as possible here (not really)
+
+## Guides
+Hopefully, this has the links and finds that I used to help me overcome some configuration difficulty.
+
+## Dotfiles
+All configuration files and directories can be found in this folder.
+
+## Scripts
+Terrible scripts that need to be reworked are contained in this folder. 

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 
+# If not running interactively, don't do anything
+case $- in
+  *i*) ;;
+    *) return;;
+esac
+
 # Path to the bash it configuration
 export BASH_IT="/home/trevon/.bash_it"
 
-# Lock and Load a custom theme file
+# Lock and Load a custom theme file.
+# Leave empty to disable theming.
 # location /.bash_it/themes/
-export BASH_IT_THEME='powerline-multiline'
+export BASH_IT_THEME='bobby'
 
 # (Advanced): Change this to the name of your remote repo if you
 # cloned bash-it with a remote other than origin such as `bash-it`.
@@ -18,7 +25,7 @@ export GIT_HOSTING='git@git.domain.com'
 unset MAILCHECK
 
 # Change this to your console based IRC client of choice.
-export IRC_CLIENT='wechat'
+export IRC_CLIENT='irssi'
 
 # Set this to the command you use for todo.txt-cli
 export TODO="t"
@@ -46,23 +53,10 @@ export SCM_CHECK=true
 
 # (Advanced): Uncomment this to make Bash-it reload itself automatically
 # after enabling or disabling aliases, plugins, and completions.
-export BASH_IT_AUTOMATIC_RELOAD_AFTER_CONFIG_CHANGE=1
+# export BASH_IT_AUTOMATIC_RELOAD_AFTER_CONFIG_CHANGE=1
+
+# Uncomment this to make Bash-it create alias reload.
+# export BASH_IT_RELOAD_LEGACY=1
 
 # Load Bash It
 source "$BASH_IT"/bash_it.sh
-
-# GoLang
-export PATH=$PATH:/usr/local/go/bin
-
-# Lazy Git
-function lazygit() {
-	git add .
-	git commit -a -m $1
-	git push
-}
-
-## Add RVM to PATH for scripting. Make sure this is the last PATH variable change.
-# export PATH="$PATH:$HOME/.rvm/bin"
-# source /home/blackmanta/.rvm/scripts/rvm
-
-export VISUAL="vim"

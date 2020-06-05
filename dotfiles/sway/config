@@ -19,7 +19,7 @@ font pango:Hasklug Nerd Font Medium 9
 floating_modifier $mod
 
 # start a terminal
-bindsym $mod+Return exec urxvt
+bindsym $mod+Return exec terminator
 
 # kill focused window
 bindsym $mod+Shift+q kill
@@ -37,10 +37,11 @@ bindsym XF86AudioLowerVolume exec --no-startup-id pactl set-sink-volume @DEFAULT
 bindsym XF86AudioMute exec --no-startup-id pactl set-sink-mute @DEFAULT_SINK@ toggle
 
 # Screen lock i3lock-fancy-git
-bindsym $mod+z exec swaylock -n -p win -i /home/trevon/Pictures/lock.jpg -u -f 
+bindsym $mod+z exec swaylock -n -i /home/trevon/Pictures/lock.jpg -u -f 
 
 # Wallpaper
 output * bg  ~/Pictures/wallpaper fill 
+output XWAYLAND0 scale 2
 
 # alternatively, you can use the cursor keys:
 bindsym $mod+h focus left

@@ -11,6 +11,8 @@ When setting out to attack a container, we must first understand what a containe
 - [cgroup v1 - spec](https://www.kernel.org/doc/Documentation/cgroup-v1/)
 - [cgroup v2 - spec](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
 - [cgroups package for Go](https://github.com/containerd/cgroups)
+- [Understanding the Docker Internals](https://medium.com/@BeNitinAgarwal/understanding-the-docker-internals-7ccb052ce9fe)
+- [Docker interals: process isolation with namespaces and cgroups](https://leftasexercise.com/2018/04/12/docker-internals-process-isolation-with-namespaces-and-cgroups/)
 
 ## BSD Containers
 

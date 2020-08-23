@@ -5,14 +5,12 @@
 The goal of this note repository is to create a compository to help guide learning and research into container technologies.
 
 ## Linux Containers
-
-When setting out to attack a container, we must first understand what a container is. This definition of a container begins to differ as you inspect the layers of abstractions of different technologies. For the sake of time, we focuse on the different between two technologies LXC/LXD and docker. At this point we found ourselves reading an archived article from flockport [Understanding the key differences between LXC and Docker](https://archives.flockport.com/lxc-vs-docker/). At this time of the writing of the article, we find that the main difference would be how each technology utilizies the implementation of [cgroups](https://en.wikipedia.org/wiki/Cgroups), a container resource manager built into the Linux Kernel. The cgroup wiki page we found had an extensive list of references, so we began to dive into a cgroup rabbit hole here. Hopefully the details below present a cohert representation of our findings.
-
 - [cgroup v1 - spec](https://www.kernel.org/doc/Documentation/cgroup-v1/)
 - [cgroup v2 - spec](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
 - [cgroups package for Go](https://github.com/containerd/cgroups)
 - [Understanding the Docker Internals](https://medium.com/@BeNitinAgarwal/understanding-the-docker-internals-7ccb052ce9fe)
 - [Docker interals: process isolation with namespaces and cgroups](https://leftasexercise.com/2018/04/12/docker-internals-process-isolation-with-namespaces-and-cgroups/)
+- [The Seccomp Notifier - New Frontiers in Unpriviledged Container Developement](https://people.kernel.org/brauner/the-seccomp-notifier-new-frontiers-in-unprivileged-container-development)
 
 ## BSD Containers
 
@@ -25,9 +23,10 @@ When setting out to attack a container, we must first understand what a containe
 ### OS Layer
 
 ## Appendix
+
+### Attacking the Kernel and Friends
+- [Evil eBPF](https://media.defcon.org/DEF%20CON%2027/DEF%20CON%2027%20presentations/DEFCON-27-Jeff-Dileo-Evil-eBPF-In-Depth.pdf)
+
 ### Research Papers
 - [A Defense Method against Docker Escape Attack](https://dl.acm.org/doi/pdf/10.1145/3058060.3058085?download=true)
 - [Analysis of Security in Modern Container Platforms](https://link.springer.com/content/pdf/10.1007%2F978-981-10-5026-8_14.pdf)
-
-### Other notable container technology
-- [OpenVZ](https://openvz.org/)

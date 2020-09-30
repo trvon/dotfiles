@@ -10,5 +10,3 @@ All configuration files and directories can be found in this folder.
 
 ## Scripts
 Terrible scripts that need to be reworked are contained in this folder. 
-
-## Pictures

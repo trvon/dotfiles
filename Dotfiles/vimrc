@@ -12,16 +12,11 @@ call vundle#begin()
 Plugin 'VundleVim/Vundle.vim'
 Plugin 'tpope/vim-fugitive'
 Plugin 'L9'
-Plugin 'rstacruz/sparkup', {'rtp': 'vim/'}
-Plugin 'scrooloose/nerdtree'
 Plugin 'kien/ctrlp.vim'
 Plugin 'flazz/vim-colorschemes'
 " Plugin 'vim-scripts/Vim-JDE'
-Plugin 'artur-shaik/vim-javacomplete2'
 Plugin 'davidhalter/jedi-vim'
 Plugin 'ervandew/supertab'
-Plugin 'vim-scripts/indentpython.vim'
-Plugin 'Lokaltog/powerline', {'rtp': 'powerline/bindings/vim'}
 Plugin 'fatih/vim-go'
 call vundle#end()
 
@@ -43,23 +38,10 @@ inoremap jk <ESC>
 " Plugin Configurations 
 
 " Jedi-Vim 
-"
 let g:jedi#use_tabs_not_buffers=1
 let g:jedi#popup_select_first=0
 
-"-
-" Vim Powerline
-let g:Powerline_symbols='fancy'
 
-"
 " NerdTree settings
 map <C-t> :NERDTreeToggle<CR>
-
-" Java Settings
-autocmd FileType java setlocal omnifunc=javacomplete#Complete
-nmap <F4> <Plug>(JavaComplete-Imports-AddSmart)
-imap <F4> <Plug>(JavaComplete-Imports-AddSmart)
-
-nmap <F5> <Plug>(JavaComplete-Imports-AddMissing)
-imap <F5> <Plug>(JavaComplete-Imports-AddMissing)
 

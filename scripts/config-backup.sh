@@ -37,13 +37,12 @@ function restore {
 			base='.'$(basename "${i}")
 			cp $i ~/$base
 		elif [ -d $1 ]; then
-			cp $i ~/.config
+			cp -r $i ~/.config
 		fi
 	done
 	
 	# Need to include an OS check that install's programs
 	# using local package manager
-	
 	if [ ! -d ~/.vim/bundle ]; then
         	mkdir -p ~/.vim/bundle
 		git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
@@ -55,7 +54,7 @@ function restore {
 	read -t 5 prompt
 	case "$prompt" in 
 		y|Y) bash_install ;;
-		*) echo "Proceeding ..."
+		*) echo "Proceeding ..." && exit ;;
 	esac
 }
 
@@ -67,7 +66,6 @@ do
 	case "$P" in 
 		"r") restore && break ;;
 		"b") backup && break ;;
-		#"n") echo "Okey :)" && break ;;
 		*) echo "try again" ;;
 	esac
 done	

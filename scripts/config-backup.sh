@@ -34,7 +34,7 @@ function restore {
 	for i in ../dotfiles/*
 	do 	
 		# Copies files to home
-		if [[ -f $1 ]]; then 
+		if test -f $1 ; then 
 			base='.'$(basename "${i}")
 			cp $i ~/$base
 		elif [ -d $1 ]; then

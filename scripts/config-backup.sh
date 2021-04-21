@@ -1,10 +1,11 @@
+#!/bin/bash
 # This will backup your dotfiles
 
 #backs up configs to res folder
 function backup {
 	for i in ~/.*
 	do
-		if [ -f $i ]; then
+		if [[ -f $i ]]; then
 			file=$(basename "${i}" | sed 's/.//' )
 	 		if [[ $file == "bash_"* ]] || [ $file == esd_auth ] || 
 					[[ $file == "zcompdump"* ]] || [[ $file == "viminfo"* ]] || 
@@ -19,13 +20,13 @@ function backup {
 # Bash_it
 function bash_install {
 	git clone --depth=1 https://github.com/Bash-it/bash-it.git ~/.bash_it
-	sh ~/.bash_it/install.sh
+	~/.bash_it/install.sh
 }	
 
 # restores saved configs in res
 function restore {
 	# For configs
-	if [ ! -d ~/.config ]; then
+	if [[ ! -d ~/.config ]]; then
 		mkdir ~/.config
 	fi
 	
@@ -33,17 +34,16 @@ function restore {
 	for i in ../dotfiles/*
 	do 	
 		# Copies files to home
-		if [ -f $1 ]; then 
+		if test -f $1 ; then 
 			base='.'$(basename "${i}")
 			cp $i ~/$base
 		elif [ -d $1 ]; then
-			cp $i ~/.config
+			cp -r $i ~/.config
 		fi
 	done
 	
 	# Need to include an OS check that install's programs
 	# using local package manager
-	
 	if [ ! -d ~/.vim/bundle ]; then
         	mkdir -p ~/.vim/bundle
 		git clone https://github.com/VundleVim/Vundle.vim ~/.vim/bundle/Vundle.vim
@@ -55,7 +55,7 @@ function restore {
 	read -t 5 prompt
 	case "$prompt" in 
 		y|Y) bash_install ;;
-		*) echo "Proceeding ..."
+		*) echo "Proceeding ..." && exit ;;
 	esac
 }
 
@@ -65,9 +65,8 @@ do
 	echo "Do you want to backup or restore your configs? (r/b)"
 	read P
 	case "$P" in 
-		"r") restore && break ;;
-		"b") backup && break ;;
-		#"n") echo "Okey :)" && break ;;
+		"r") restore && exit ;;
+		"b") backup && exit ;;
 		*) echo "try again" ;;
 	esac
 done	

@@ -37,13 +37,7 @@ xset +dpms
 xset dpms 0 0 300
 xrdb -q
 
-# Wallpaper
-feh --bg-fill ~/Pictures/wallpaper.jpg
-
 # dunst
-dunst -config ~/.config/dunst/dunstrc &
-
-# compton
-compton --config ~/.config/i3/compton.conf &
-
-exec i3
+exec --no-startup-id dunst -config ~/.config/dunst/dunstrc &
+exec --no-startup-id compton --config ~/.config/i3/compton.conf &
+exec sway

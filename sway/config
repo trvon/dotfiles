@@ -1,5 +1,4 @@
-# Mako
-exec mako --anchor bottom-right
+# Mako exec mako --anchor bottom-right
 # Load X Resources
 exec xrdb -load ~/.Xresources
 
@@ -150,6 +149,8 @@ smart_gaps on
 
 # Allow clicking with the touchpad
 exec --no-startup-id synclient TapButton1=1
+
+exec --no-startup-id /usr/bin/gnome-keyring-daemon
 
 # Screenshot
 bindsym --release Mod4+c exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/Screenshots'"

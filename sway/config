@@ -1,5 +1,4 @@
 # Mako exec mako --anchor bottom-right
-# Load X Resources
 exec xrdb -load ~/.Xresources
 
 # Modifier key
@@ -16,8 +15,9 @@ font pango:Hasklug Nerd Font Medium 9
 
 # Use Mouse+$mod to drag floating windows to their wanted position
 floating_modifier $mod
+# Load X Resources
 
-# start a terminal
+# start a terminaindsym $mod+Return exec urxvt
 bindsym $mod+Return exec terminator
 
 # kill focused window
@@ -27,16 +27,33 @@ bindsym $mod+Shift+q kill
 bindsym $mod+n exec nm-applet
 
 # Dmenu
-bindsym $mod+d exec dmenu_run  
+bindsym $mod+d exec rofi -show drun -sidebar-mode -terminal terminator
 
-# Volume
-## audio controls
-bindsym XF86AudioRaiseVolume exec --no-startup-id pactl set-sink-volume @DEFAULT_SINK@ +2%
-bindsym XF86AudioLowerVolume exec --no-startup-id pactl set-sink-volume @DEFAULT_SINK@ -2%
-bindsym XF86AudioMute exec --no-startup-id pactl set-sink-mute @DEFAULT_SINK@ toggle
+
+# Special Keys
+bindsym XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ +5%
+bindsym XF86AudioLowerVolume exec pactl set-sink-volume @DEFAULT_SINK@ -5%
+bindsym XF86AudioMute exec pactl set-sink-mute @DEFAULT_SINK@ toggle
+bindsym XF86AudioMicMute exec pactl set-source-mute @DEFAULT_SOURCE@ toggle
+bindsym XF86MonBrightnessDown exec brightnessctl set 5%-
+bindsym XF86MonBrightnessUp exec brightnessctl set 5%+
+bindsym XF86AudioPlay exec playerctl play-pause
+bindsym XF86AudioNext exec playerctl next
+bindsym XF86AudioPrev exec playerctl previous
+bindsym XF86Search exec $menu
 
 # Screen lock i3lock-fancy-git
-bindsym $mod+z exec swaylock -n -i /home/trevon/Pictures/lock.jpg -u -f 
+bindsym $mod+z exec swaylock 	--clock --screenshots --indicator --indicator-radius 75 \
+  --indicator-thickness 7 \
+	--effect-blur 25x5 \
+	--effect-vignette 0.5:0.5 \
+	--ring-color bb00cc \
+	--key-hl-color 880033 \
+	--line-color 00000000 \
+	--inside-color 00000088 \
+	--separator-color 00000000 \
+ 	--grace 2 \
+	--fade-in 0.2
 
 # Wallpaper
 output * bg  ~/Pictures/wallpaper fill 
@@ -156,10 +173,6 @@ exec --no-startup-id /usr/bin/gnome-keyring-daemon
 bindsym --release Mod4+c exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/Screenshots'"
 
 # Screen brightness
-# bindsym XF86MonBrightnessUp exec xbacklight -inc 20 # increase screen brightness
-# bindsym XF86MonBrightnessDown exec xbacklight -dec 20 # decrease screen brightness
-bindsym XF86MonBrightnessUp exec light -A 5
-bindsym XF86MonBrightnessDown exec light -U 5
 
 # Hardware specific
 input "1739:30383:DLL075B:01_06CB:76AF_Touchpad" {

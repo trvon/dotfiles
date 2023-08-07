@@ -1,129 +1,179 @@
-# Mako exec mako --anchor bottom-right
-exec xrdb -load ~/.Xresources
+# Please see http://i3wm.org/docs/userguide.html for a complete reference!
 
-# Modifier key
+#set mod key to super
 set $mod Mod4
 
-# Clamshell Mode
-set $laptop eDP-1
-bindswitch --reload --locked lid:on output $laptop disable
-bindswitch --reload --locked lid:off output $laptop enable
-
-# This font is widely installed, provides lots of unicode glyphs, right-to-left
-# text rendering and scalability on retina/hidpi displays (thanks to pango).
-font pango:Hasklug Nerd Font Medium 9
-
 # Use Mouse+$mod to drag floating windows to their wanted position
-floating_modifier $mod
-# Load X Resources
+floating_modifier $mod normal
 
-# start a terminaindsym $mod+Return exec urxvt
-bindsym $mod+Return exec terminator
+#key bindings bindings go here. Using --to-code so that they work in different keyboard layouts
+bindsym --to-code {
+    # start a terminal
+    $mod+Return exec konsole 
 
-# kill focused window
-bindsym $mod+Shift+q kill
+    #program launcher
+    # $mod+d exec urxvtc --title menu_term -e menu.sh
+    # $mod+d exec rofi -show drun -sidebar-mode -terminal konsole
+    $mod+d exec wofi --show=drun
 
-# nm-applet
-bindsym $mod+n exec nm-applet
+    #clipboard history script similar to menu, but disabled for now
+    #wl-clipboard-history doesn't allow copy/pasting of images or files
+    #$mod+c exec urxvtc --title menu_term -e clipboard
+    
+    #color picker script
+    $mod+c exec color-picker
 
-# Dmenu
-bindsym $mod+d exec rofi -show drun -sidebar-mode -terminal terminator
+    #wallpaper picker
+    $mod+shift+w exec termite --title menu_term -e wallpaper.sh
+
+    # kill focused window
+    $mod+shift+q kill
+
+    # lock screen
+    $mod+z exec swaylock 	--clock --screenshots --indicator --indicator-radius 75 \
+       --indicator-thickness 7 \
+	     --effect-blur 25x5 \
+	     --effect-vignette 0.5:0.5 \
+	     --ring-color bb00cc \
+	     --key-hl-color 880033 \
+	     --line-color 00000000 \
+	     --inside-color 00000088 \
+	     --separator-color 00000000 \
+ 	     --grace 2 \
+	     --fade-in 0.2
+
+    # lock screen and turn screen off
+    $mod+shift+g exec lock-screen-off
+
+    #script to open clipboard content in mpv (manily used for youtube videos)
+    # not really needed when using qutebrowser
+    $mod+m exec plaympv
+
+    # change focus
+    $mod+h focus left
+    $mod+j focus down
+    $mod+k focus up
+    $mod+l focus right
+
+    # alternatively, you can use the cursor keys:
+    $mod+left focus left
+    $mod+down focus down
+    $mod+up focus up
+    $mod+right focus right
+
+    # move focused window
+    $mod+shift+h move left
+    $mod+shift+j move down
+    $mod+shift+k move up
+    $mod+shift+l move right
+
+    # alternatively, you can use the cursor keys:
+    $mod+shift+left move left
+    $mod+shift+down move down
+    $mod+shift+up move up
+    $mod+shift+right move right
+
+    # split in horizontal orientation
+    $mod+shift+v splith
+
+    # split in vertical orientation
+    $mod+v splitv
+
+    # enter fullscreen mode for the focused container
+    $mod+f fullscreen
+
+    # change container layout (stacked, tabbed, toggle split)
+    $mod+s layout stacking
+    $mod+w layout tabbed
+    $mod+e layout toggle split
+
+    # toggle tiling / floating
+    $mod+shift+f floating toggle
+
+    # change focus between tiling / floating windows
+    $mod+o focus mode_toggle
+
+    # focus the parent container
+    $mod+a focus parent
+
+    # focus the child container
+    $mod+shift+a focus child
+
+    # switch to workspace
+    $mod+1 workspace 1
+    $mod+2 workspace 2
+    $mod+3 workspace 3
+    $mod+4 workspace 4
+    $mod+5 workspace 5
+    $mod+6 workspace 6
+    $mod+7 workspace 7
+    $mod+8 workspace 8
+    $mod+9 workspace 9
+    $mod+0 workspace 10
+    $mod+comma exec prev-workspace 
+    $mod+period exec next-workspace
 
 
-# Special Keys
-bindsym XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ +5%
-bindsym XF86AudioLowerVolume exec pactl set-sink-volume @DEFAULT_SINK@ -5%
-bindsym XF86AudioMute exec pactl set-sink-mute @DEFAULT_SINK@ toggle
-bindsym XF86AudioMicMute exec pactl set-source-mute @DEFAULT_SOURCE@ toggle
-bindsym XF86MonBrightnessDown exec brightnessctl set 5%-
-bindsym XF86MonBrightnessUp exec brightnessctl set 5%+
-bindsym XF86AudioPlay exec playerctl play-pause
-bindsym XF86AudioNext exec playerctl next
-bindsym XF86AudioPrev exec playerctl previous
-bindsym XF86Search exec $menu
+    # move focused container to workspace
+    $mod+shift+1 move container to workspace 1
+    $mod+shift+2 move container to workspace 2
+    $mod+Shift+3 move container to workspace 3
+    $mod+Shift+4 move container to workspace 4
+    $mod+Shift+5 move container to workspace 5
+    $mod+Shift+6 move container to workspace 6
+    $mod+Shift+7 move container to workspace 7
+    $mod+Shift+8 move container to workspace 8
+    $mod+Shift+9 move container to workspace 9
+    $mod+Shift+0 move container to workspace 10
+    $mod+greater exec next-workspace-move-container
+    $mod+Shift+comma exec prev-workspace-move-container
 
-# Screen lock i3lock-fancy-git
-bindsym $mod+z exec swaylock 	--clock --screenshots --indicator --indicator-radius 75 \
-  --indicator-thickness 7 \
-	--effect-blur 25x5 \
-	--effect-vignette 0.5:0.5 \
-	--ring-color bb00cc \
-	--key-hl-color 880033 \
-	--line-color 00000000 \
-	--inside-color 00000088 \
-	--separator-color 00000000 \
- 	--grace 2 \
-	--fade-in 0.2
+    # reload the configuration file
+    $mod+shift+c reload
+    # restart i3 inplace (preserves your layout/session, can be used to upgrade i3)
+    $mod+Shift+r restart
+    # exit i3 (logs you out of your X session)
+    $mod+Shift+e exit
 
-# Wallpaper
-output * bg  ~/Pictures/wallpaper fill 
-output XWAYLAND0 scale 2
+    #resize key
+    $mod+r mode "resize"
 
-# alternatively, you can use the cursor keys:
-bindsym $mod+h focus left
-bindsym $mod+j focus down
-bindsym $mod+k focus up
-bindsym $mod+l focus right
+    #flashfocus key
+    $mod+n exec nc_flash_window
 
-# Move window left, down, right, or up.
-bindsym $mod+Shift+h move left
-bindsym $mod+Shift+j move down
-bindsym $mod+Shift+k move up
-bindsym $mod+Shift+l move right
+    #screenshot controls (uses my screenshot scripts)
+    Print exec screenshot
+    shift+Print exec screenshot-area
 
-# split in horizontal orientation
-bindsym $mod+o split h
+    #show drop down terminal
+    #$mod+grave scratchpad show
+    $mod+Escape scratchpad show
 
-# split in vertical orientation
-bindsym $mod+v split v
+    #open a drop-down terminal
+    #$mod+shift+grave exec kitty --title drop_down_term
+    $mod+shift+Escape exec kitty --title drop_down_term
 
-# enter fullscreen mode for the focused container
-bindsym $mod+f fullscreen toggle
+    #open a file manager
+    $mod+space exec pcmanfm-qt 
 
-# change container layout (stacked, tabbed, toggle split)
-bindsym $mod+s layout stacking
-bindsym $mod+w layout tabbed
-bindsym $mod+e layout toggle split
+    #open nmtui dialog
+    $mod+shift+n exec termite --title wifi_term -e nmtui-connect
 
-# toggle tiling / floating
-bindsym $mod+Shift+space floating toggle
+    #open pulsemixer dialog
+    $mod+shift+m exec termite --title pulsemixer_term -e pulsemixer
 
-# change focus between tiling / floating windows
-bindsym $mod+space focus mode_toggle
+    # Pulse Audio controls, requires ponymix
+    XF86AudioRaiseVolume exec ponymix --sink --max-volume 150 increase 5 #increase sound volume
+    XF86AudioLowerVolume exec ponymix --sink --max-volume 150 decrease 5 #decrease sound volume
+    XF86AudioMute exec --no-startup-id pactl set-sink-mute 0 toggle # mute sound
 
-# focus the parent container
-bindsym $mod+a focus parent
+    #keybind for PTT applications like mumble, discord, because it doesn't work properly under wayland
+    $mod+tab exec mute-toggle
 
-# switch to workspace
-bindsym $mod+1 workspace 1
-bindsym $mod+2 workspace 2
-bindsym $mod+3 workspace 3
-bindsym $mod+4 workspace 4
-bindsym $mod+5 workspace 5
-bindsym $mod+6 workspace 6
-bindsym $mod+7 workspace 7
-bindsym $mod+8 workspace 8
-bindsym $mod+9 workspace 9
-bindsym $mod+0 workspace 10
-
-# move focused container to workspace
-bindsym $mod+Shift+1 move container to workspace 1
-bindsym $mod+Shift+2 move container to workspace 2
-bindsym $mod+Shift+3 move container to workspace 3
-bindsym $mod+Shift+4 move container to workspace 4
-bindsym $mod+Shift+5 move container to workspace 5
-bindsym $mod+Shift+6 move container to workspace 6
-bindsym $mod+Shift+7 move container to workspace 7
-bindsym $mod+Shift+8 move container to workspace 8
-bindsym $mod+Shift+9 move container to workspace 9
-bindsym $mod+Shift+0 move container to workspace 10
-
-# reload the configuration file
-bindsym $mod+Shift+c reload
-# restart i3 inplace (preserves your layout/session, can be used to upgrade i3)
-bindsym $mod+Shift+r restart
-# exit i3 (logs you out of your X session)
-bindsym $mod+Shift+e exit 
+    # Sreen brightness controls
+    XF86MonBrightnessUp exec light -A 10 #increase screen brightness
+    XF86MonBrightnessDown exec light -U 10 # decrease screen brightness
+}
 
 # resize window (you can also use the mouse for that)
 mode "resize" {
@@ -133,56 +183,115 @@ mode "resize" {
         # Pressing right will grow the window’s width.
         # Pressing up will shrink the window’s height.
         # Pressing down will grow the window’s height.
-        bindsym h resize shrink width 10 px or 10 ppt
-        bindsym j resize grow height 10 px or 10 ppt
-        bindsym k resize shrink height 10 px or 10 ppt
-        bindsym l resize grow width 10 px or 10 ppt
+        bindsym --to-code {
+            h resize shrink width 10 px or 10 ppt
+            j resize grow height 10 px or 10 ppt
+            k resize shrink height 10 px or 10 ppt
+            l resize grow width 10 px or 10 ppt
 
-        # same bindings, but for the arrow keys
-        bindsym Left resize shrink width 10 px or 10 ppt
-        bindsym Down resize grow height 10 px or 10 ppt
-        bindsym Up resize shrink height 10 px or 10 ppt
-        bindsym Right resize grow width 10 px or 10 ppt
+            # same bindings, but for the arrow keys
+            Left resize shrink width 10 px or 10 ppt
+            Down resize grow height 10 px or 10 ppt
+            Up resize shrink height 10 px or 10 ppt
+            Right resize grow width 10 px or 10 ppt
 
-        # back to normal: Enter or Escape
-        bindsym Return mode "default"
-        bindsym Escape mode "default"
+            # back to normal: Enter or Escape
+            Return mode "default"
+            Escape mode "default"
+        }
 }
 
-bindsym $mod+r mode "resize"
+#window rules for my menu popup and drop down terminal using the scratchpad
+for_window [title="^menu_term$"] floating enable, resize set width 50 ppt height 50 ppt, move center
+for_window [title="^screensaver$"] fullscreen toggle global
+for_window [title="^drop_down_term$"] floating enable, resize set width 100 ppt height 60 ppt, move position 0px 0px, move scratchpad
+for_window [title="^wifi_term$"] floating enable, resize set width 36 ppt height 39 ppt, move center
+for_window [title="^pulsemixer_term$"] floating enable, resize set width 36 ppt height 39 ppt, move center
+#for_window [app_id="^mpv$"] floating enable
+
+
+#general settings
+gaps inner 11
+gaps outer 0
+#hide mouse on inactivity
+seat * hide_cursor 10000
+font Roboto:Hasklug Nerd Font Medium 9
+default_floating_border pixel 0
+default_border pixel 0
+hide_edge_borders both
+focus_follows_mouse no
+# border colors
+client.focused		#ff6e67 #ff6e67 #ff6e67 #ffc1bd #ff6e67
+#client.focused          #bababa #bababa #bababa #dadada #bababa
+client.unfocused	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
+client.focused_inactive	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
+
+# border_images.focused ~/.config/sway/shadows.png
+# border_images.focused_inactive ~/.config/sway/shadows.png
+# border_images.unfocused ~/.config/sway/shadows.png
+# border_images.urgent ~/.config/sway/shadows.png
+
+#client.unfocused	#262626 #262626 #262626 #262626 #262626
+#client.focused_inactive	#262626 #262626 #262626 #262626 #262626
+
+
+#startup programs
+#exec udiskie &
+exec redshift-gtk
+exec nm-applet --indicator
+exec blueman-applet
+exec mako
+#input 1:1:AT_Translated_Set_2_keyboard xkb_numlock enable
+#this remains unused until I can copy files/images while it runs
+#exec wl-clipboard-history -t
+
+input "2:14:ETPS/2_Elantech_Touchpad" {
+    dwt disabled
+    tap enabled
+    tap_button_map lmr
+    middle_emulation enabled
+}
+
+input "1:1:AT_Translated_Set_2_keyboard" {
+    repeat_rate 30
+    repeat_delay 350
+}
+
+input "1241:41619:OBINS_OBINS_AnnePro2" {
+    repeat_rate 30
+    repeat_delay 350
+}
 
 bar {
-	swaybar_command waybar
+    swaybar_command waybar
 }
 
-# Windows
-default_border pixel 0
-hide_edge_borders smart
+# keyboard layouts
+input * xkb_layout "us"
 
-# Gaps
-gaps outer 5
-gaps inner 5
-smart_gaps on
+# wallpaper settings
+output "*" background wallpaper.png fill
 
-# Allow clicking with the touchpad
-exec --no-startup-id synclient TapButton1=1
-
-exec --no-startup-id /usr/bin/gnome-keyring-daemon
-
-# Screenshot
-bindsym --release Mod4+c exec "scrot -s '%F-%H:%M:%S_$wx$h.png' -e 'mv $f ~/Pictures/Screenshots'"
-
-# Screen brightness
-
-# Hardware specific
-input "1739:30383:DLL075B:01_06CB:76AF_Touchpad" {
-        tap enabled
-        natural_scroll enabled
-        pointer_accel 0.3
-        accel_profile adaptive
-        dwt enabled
+#gnome theme settings
+set $gnome-schema org.gnome.desktop.interface
+exec_always {
+    gsettings set $gnome-schema gtk-theme 'Materia-dark'
+    gsettings set $gnome-schema icon-theme 'Tela-orange-dark'
+    gsettings set $gnome-schema cursor-theme 'Vanilla-DMZ'
+    gsettings set $gnome-schema font-name 'Roboto 10'
+    gsettings set $gnome-schema monospace-font-name 'Hack 10'
 }
 
-input "1133:45081:MX_Master_2S_Mouse" {
-        natural_scroll enabled
-}
+exec_always import-gsettings \
+    gtk-theme:gtk-theme-name \
+    icon-theme:gtk-icon-theme-name \
+    cursor-theme:gtk-cursor-theme-name
+
+exec flashfocus -t 200 -o 0.4 --no-flash-on-focus
+exec --no-startup-id gnome-keyring-daemon --start --components=pkcs11,secrets,ssh
+exec eval `ssh-agent -s`
+
+# Clamshell Mode
+set $laptop eDP-1
+bindswitch --reload --locked lid:on output $laptop disable
+bindswitch --reload --locked lid:off output $laptop enable

@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "name": "Workspace check",
+      "every": "30m",
+      "prompt": "Review the current repo status and list any urgent follow-ups.",
+      "enabled": true,
+      "deliverWhenBusy": false,
+      "deliverMode": "followUp"
+    },
+    {
+      "name": "Model pulse",
+      "every": "2h",
+      "prompt": "Run a quick health pulse: confirm the model is responsive and summarize queue status.",
+      "enabled": false,
+      "deliverWhenBusy": false,
+      "deliverMode": "followUp"
+    }
+  ]
+}

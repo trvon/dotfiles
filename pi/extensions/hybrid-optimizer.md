@@ -28,7 +28,7 @@ Installed file:
 - `/hybrid-proof-forward` - probe forwarded optimized prompt formatting/tracing.
 - `/hybrid-reset` - clear carry-state memory.
 - `/hybrid-hints` - show currently loaded YAMS hints.
-- `/hybrid-proof` - run one-shot optimizer probe against `PI_OPTIMIZER_MODEL` (fallback `mistralai/ministral-3-14b-reasoning`).
+- `/hybrid-proof` - run one-shot optimizer probe against `PI_OPTIMIZER_MODEL` (fallback `unsloth/qwen3.5-27b`).
 - `/hybrid-proof-research` - probe research optimizer routing/model.
 - `/oracle-proof` - probe oracle validator model and parser.
 

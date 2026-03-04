@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 
-import { complete } from "@mariozechner/pi-ai";
+import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 type CronDeliverMode = "immediate" | "followUp";
@@ -48,7 +48,7 @@ type WatchdogConfig = {
   verifierProvider: string;
   verifierModel: string;
   verifierMaxTokens: number;
-  verifierTimeoutMs: number;
+  verifierInactivityMs: number;
   recoverOnTermination: boolean;
   terminationMode: TerminationMode;
   terminationMinCompleteChars: number;
@@ -76,6 +76,9 @@ const WRITE_SCHEMA_GUARD_COOLDOWN_MS = parsePositiveInt(
   45_000
 );
 const FINAL_TAIL_GRACE_MS = parsePositiveInt(process.env.PI_HEALTH_WATCHDOG_FINAL_TAIL_GRACE_MS, 15_000);
+// Hard cap: the final-tail-pending state cannot persist beyond this duration,
+// even if new tool-use events keep resetting the grace timer.
+const FINAL_TAIL_HARD_CAP_MS = parsePositiveInt(process.env.PI_HEALTH_WATCHDOG_FINAL_TAIL_HARD_CAP_MS, 60_000);
 
 const DEFAULT_CONFIG: WatchdogConfig = {
   checkEveryMs: 5_000,
@@ -93,7 +96,7 @@ const DEFAULT_CONFIG: WatchdogConfig = {
   verifierProvider: "lmstudio",
   verifierModel: PRIMARY_MODEL,
   verifierMaxTokens: 120,
-  verifierTimeoutMs: 20_000,
+  verifierInactivityMs: 20_000,
   recoverOnTermination: true,
   terminationMode: "balanced",
   terminationMinCompleteChars: 900,
@@ -367,9 +370,9 @@ function makeConfigFromEnv(): WatchdogConfig {
       process.env.PI_HEALTH_WATCHDOG_VERIFIER_MAX_TOKENS,
       DEFAULT_CONFIG.verifierMaxTokens
     ),
-    verifierTimeoutMs: parsePositiveInt(
-      process.env.PI_HEALTH_WATCHDOG_VERIFIER_TIMEOUT_MS,
-      DEFAULT_CONFIG.verifierTimeoutMs
+    verifierInactivityMs: parsePositiveInt(
+      process.env.PI_HEALTH_WATCHDOG_VERIFIER_INACTIVITY_MS,
+      DEFAULT_CONFIG.verifierInactivityMs
     ),
     recoverOnTermination: parseBoolean(
       process.env.PI_HEALTH_WATCHDOG_RECOVER_ON_TERMINATION,
@@ -428,6 +431,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   let lastWriteSchemaGuardAt = 0;
   let finalTailPending = false;
   let finalTailStartedAt = 0;
+  let finalTailFirstActivatedAt = 0; // tracks the very first activation, not reset by re-entries
   let finalTailTimer: ReturnType<typeof setTimeout> | null = null;
   let queuedWriteSchemaGuard = false;
   let queuedWriteSchemaErrorText = "";
@@ -490,9 +494,11 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   function resolveFinalTail(reason: string): void {
     if (!finalTailPending) return;
     const elapsedMs = finalTailStartedAt > 0 ? Date.now() - finalTailStartedAt : -1;
-    trace("final_tail_resolved", { reason, elapsedMs });
+    const totalElapsedMs = finalTailFirstActivatedAt > 0 ? Date.now() - finalTailFirstActivatedAt : -1;
+    trace("final_tail_resolved", { reason, elapsedMs, totalElapsedMs });
     finalTailPending = false;
     finalTailStartedAt = 0;
+    finalTailFirstActivatedAt = 0;
     clearFinalTailTimer();
   }
 
@@ -547,15 +553,53 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   }
 
   function startFinalTailWatch(ctx: ExtensionContext, source: string): void {
+    const now = Date.now();
+
+    // Track when the final-tail-pending state was FIRST activated.
+    // This survives re-entries from repeated tool-use events.
+    if (!finalTailPending || finalTailFirstActivatedAt === 0) {
+      finalTailFirstActivatedAt = now;
+    }
+
+    // Hard cap: if we've been in final-tail-pending for too long, refuse to
+    // restart the grace timer.  Let the current timer expire (or fire immediately
+    // if none is running) so the watchdog can act.
+    const totalElapsed = now - finalTailFirstActivatedAt;
+    if (totalElapsed >= FINAL_TAIL_HARD_CAP_MS) {
+      trace("final_tail_hard_cap_reached", {
+        source,
+        totalElapsedMs: totalElapsed,
+        hardCapMs: FINAL_TAIL_HARD_CAP_MS,
+      });
+      // Force-expire the pending state immediately.
+      finalTailPending = false;
+      finalTailStartedAt = 0;
+      finalTailFirstActivatedAt = 0;
+      clearFinalTailTimer();
+      if (pendingTermination) {
+        const candidate = pendingTermination;
+        pendingTermination = null;
+        void maybeRecoverFromTermination(ctx, candidate, "final_tail_hard_cap");
+      }
+      if (queuedWriteSchemaGuard) {
+        const queuedError = queuedWriteSchemaErrorText || "queued write-schema guard";
+        queuedWriteSchemaGuard = false;
+        queuedWriteSchemaErrorText = "";
+        dispatchWriteSchemaGuardPrompt(ctx, queuedError);
+      }
+      return;
+    }
+
     finalTailPending = true;
-    finalTailStartedAt = Date.now();
+    finalTailStartedAt = now;
     clearFinalTailTimer();
-    trace("final_tail_pending", { source, graceMs: FINAL_TAIL_GRACE_MS });
+    trace("final_tail_pending", { source, graceMs: FINAL_TAIL_GRACE_MS, totalElapsedMs: totalElapsed, hardCapMs: FINAL_TAIL_HARD_CAP_MS });
     finalTailTimer = setTimeout(() => {
       if (!finalTailPending) return;
       const elapsedMs = finalTailStartedAt > 0 ? Date.now() - finalTailStartedAt : FINAL_TAIL_GRACE_MS;
       finalTailPending = false;
       finalTailStartedAt = 0;
+      finalTailFirstActivatedAt = 0;
       clearFinalTailTimer();
       trace("final_tail_timeout", { source, elapsedMs, queuedWriteSchemaGuard });
       if (pendingTermination) {
@@ -576,24 +620,58 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     return (
       ctx.modelRegistry.find(config.verifierProvider, config.verifierModel) ||
       ctx.modelRegistry.find(config.verifierProvider, PRIMARY_MODEL) ||
-      ctx.modelRegistry.find(config.verifierProvider, "mistralai/ministral-3-14b-reasoning") ||
       ctx.modelRegistry.find(config.verifierProvider, "unsloth/qwen3.5-27b") ||
       null
     );
   }
 
-  async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Stream a completion and abort only if no new events arrive within `inactivityMs`.
+   * As long as LM Studio is actively generating tokens, the timer resets and the
+   * request is never killed.
+   */
+  async function completeWithInactivityTimeout(
+    model: any,
+    context: any,
+    options: Record<string, any>,
+    inactivityMs: number
+  ): Promise<any> {
+    const controller = new AbortController();
+    const s = stream(model, context, { ...options, signal: controller.signal });
+    let result: any = null;
+    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const resetTimer = () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        controller.abort();
+      }, inactivityMs);
+    };
+
+    resetTimer();
+
     try {
-      return await Promise.race([
-        promise,
-        new Promise<T>((_resolve, reject) => {
-          timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-        }),
-      ]);
+      for await (const event of s) {
+        resetTimer();
+        if (event.type === "done") {
+          result = event.message;
+        } else if (event.type === "error") {
+          result = event.error;
+        }
+      }
+    } catch (err: any) {
+      if (controller.signal.aborted) {
+        throw new Error("inactivity_timeout");
+      }
+      throw err;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (inactivityTimer) clearTimeout(inactivityTimer);
     }
+
+    if (!result) {
+      throw new Error("stream ended without result");
+    }
+    return result;
   }
 
   function parseVerifierDecision(text: string): "wait" | "retry" | null {
@@ -648,6 +726,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     const verificationPrompt = [
+      "/no_think",
       "You are a watchdog verifier deciding whether an LLM run is likely still progressing.",
       "Return strict JSON only: {\"decision\":\"wait\"|\"retry\",\"reason\":\"short\"}",
       "Conservative policy: choose wait when uncertain.",
@@ -663,21 +742,19 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     ].join("\n");
 
     try {
-      const response = await withTimeout(
-        complete(
-          model,
-          {
-            messages: [
-              {
-                role: "user",
-                content: [{ type: "text", text: verificationPrompt }],
-                timestamp: Date.now(),
-              },
-            ],
-          },
-          { apiKey, maxTokens: config.verifierMaxTokens }
-        ),
-        config.verifierTimeoutMs
+      const response = await completeWithInactivityTimeout(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: verificationPrompt }],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { apiKey, maxTokens: config.verifierMaxTokens },
+        config.verifierInactivityMs
       );
 
       const text = response.content
@@ -772,8 +849,42 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     if (retryCount >= config.maxRetries) {
-      notify(ctx, `Health watchdog: max retries reached for prompt.`, "warning");
-      clearWatchdog();
+      trace("max_retries_reached", {
+        retryCount,
+        maxRetries: config.maxRetries,
+        stallKind,
+      });
+      notify(
+        ctx,
+        `Health watchdog: max retries (${config.maxRetries}) exhausted. Attempting emergency compaction to free context.`,
+        "warning"
+      );
+
+      // Try to force a compaction so the session isn't permanently bloated.
+      // This is a best-effort recovery — if compaction fails, we still stop
+      // retrying but keep the watchdog alive so it can detect future stalls
+      // if the user sends a new prompt.
+      try {
+        ctx.compact({
+          customInstructions:
+            "Emergency compaction after watchdog max retries. Aggressively reduce context. Preserve only: current objective, file paths with unsaved changes, and final error state.",
+          onComplete: () => {
+            trace("emergency_compaction_complete");
+            notify(ctx, "Emergency compaction after max retries complete.");
+          },
+          onError: (error: Error) => {
+            trace("emergency_compaction_error", { message: error.message });
+            notify(ctx, `Emergency compaction failed: ${error.message}`, "error");
+          },
+        });
+      } catch (compactError) {
+        trace("emergency_compaction_exception", {
+          message: compactError instanceof Error ? compactError.message : "unknown",
+        });
+      }
+
+      // Don't clearWatchdog() — keep stall detection alive for future prompts.
+      // Just stop retrying this particular prompt.
       return;
     }
 
@@ -883,6 +994,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     const prompt = [
+      "/no_think",
       "You are a watchdog verifier deciding if an LLM answer was cut off and should be retried.",
       "Return strict JSON only: {\"decision\":\"wait\"|\"retry\",\"reason\":\"short\"}",
       "Conservative policy: choose wait if the answer appears complete.",
@@ -903,21 +1015,19 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
 
     try {
       verifierInFlight = true;
-      const response = await withTimeout(
-        complete(
-          model,
-          {
-            messages: [
-              {
-                role: "user",
-                content: [{ type: "text", text: prompt }],
-                timestamp: Date.now(),
-              },
-            ],
-          },
-          { apiKey, maxTokens: config.verifierMaxTokens }
-        ),
-        config.verifierTimeoutMs
+      const response = await completeWithInactivityTimeout(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: prompt }],
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { apiKey, maxTokens: config.verifierMaxTokens },
+        config.verifierInactivityMs
       );
 
       const text = response.content
@@ -1179,6 +1289,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     lastWriteSchemaGuardAt = 0;
     finalTailPending = false;
     finalTailStartedAt = 0;
+    finalTailFirstActivatedAt = 0;
     queuedWriteSchemaGuard = false;
     queuedWriteSchemaErrorText = "";
     clearFinalTailTimer();
@@ -1550,6 +1661,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
         recovering,
         finalTailPending,
         finalTailStartedAt,
+        finalTailFirstActivatedAt,
       };
 
       activePrompt = "[watchdog-proof-final-tail] synthetic prompt";
@@ -1558,6 +1670,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       retryCount = 0;
       finalTailPending = true;
       finalTailStartedAt = Date.now();
+      finalTailFirstActivatedAt = Date.now();
 
       const retriesBefore = retryCount;
       let retriesAfter = retryCount;
@@ -1572,6 +1685,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
         recovering = snapshot.recovering;
         finalTailPending = snapshot.finalTailPending;
         finalTailStartedAt = snapshot.finalTailStartedAt;
+        finalTailFirstActivatedAt = snapshot.finalTailFirstActivatedAt;
       }
 
       const suppressed = retriesBefore === retriesAfter;
@@ -1602,10 +1716,12 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       lastStableAssistantAt = 0;
       writeSchemaErrorCount = 0;
       writeSchemaWindowStartedAt = 0;
-      finalTailPending = false;
-      finalTailStartedAt = 0;
-      queuedWriteSchemaGuard = false;
-      queuedWriteSchemaErrorText = "";
+     finalTailPending = false;
+    finalTailStartedAt = 0;
+    finalTailFirstActivatedAt = 0;
+    queuedWriteSchemaGuard = false;
+    queuedWriteSchemaErrorText = "";
+
       clearFinalTailTimer();
       setWatchdogStatus(ctx);
     }
@@ -1631,6 +1747,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     writeSchemaWindowStartedAt = 0;
     finalTailPending = false;
     finalTailStartedAt = 0;
+    finalTailFirstActivatedAt = 0;
     queuedWriteSchemaGuard = false;
     queuedWriteSchemaErrorText = "";
     clearFinalTailTimer();
@@ -1826,6 +1943,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     lastWriteSchemaGuardAt = 0;
     finalTailPending = false;
     finalTailStartedAt = 0;
+    finalTailFirstActivatedAt = 0;
     queuedWriteSchemaGuard = false;
     queuedWriteSchemaErrorText = "";
     clearFinalTailTimer();

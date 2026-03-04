@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
-import { complete } from "@mariozechner/pi-ai";
+import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { contextChunker } from "./semantic-compressor.ts";
 
 type Mode = "fast" | "deep";
 type OptimizationProfile = "general" | "research";
@@ -52,17 +55,18 @@ type ContextSteering = {
 
 const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
 const DEFAULT_OPTIMIZER_PROVIDER = process.env.PI_OPTIMIZER_PROVIDER || "lmstudio";
-const DEFAULT_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_MODEL || PRIMARY_MODEL;
-const FALLBACK_OPTIMIZER_MODEL = "mistralai/ministral-3-14b-reasoning";
-const RESEARCH_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_RESEARCH_MODEL || PRIMARY_MODEL;
+const DEFAULT_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_MODEL || "qwen3.5-9b";
+const FALLBACK_OPTIMIZER_MODEL = "unsloth/qwen3.5-27b";
+const RESEARCH_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_RESEARCH_MODEL || "qwen3.5-9b";
 const ORACLE_ENABLED = parseBoolean(process.env.PI_ORACLE_ENABLED, true);
 const ORACLE_PROVIDER = process.env.PI_ORACLE_PROVIDER || "lmstudio";
 const ORACLE_MODEL = process.env.PI_ORACLE_MODEL || PRIMARY_MODEL;
 const ORACLE_MAX_TOKENS = parsePositiveInt(process.env.PI_ORACLE_MAX_TOKENS, 160);
-const ORACLE_TIMEOUT_MS = parsePositiveInt(process.env.PI_ORACLE_TIMEOUT_MS, 12000);
+const ORACLE_INACTIVITY_MS = parsePositiveInt(process.env.PI_ORACLE_INACTIVITY_MS, 45000);
 
 const MIN_PROMPT_CHARS_FOR_OPTIMIZER = parsePositiveInt(process.env.PI_OPTIMIZER_MIN_CHARS, 120);
 const OPTIMIZER_MAX_TOKENS = parsePositiveInt(process.env.PI_OPTIMIZER_MAX_TOKENS, 700);
+const OPTIMIZER_INACTIVITY_MS = parsePositiveInt(process.env.PI_OPTIMIZER_INACTIVITY_MS, 20000);
 const UI_PROGRESS_NOTIFY_MS = parsePositiveInt(process.env.PI_HYBRID_UI_PROGRESS_NOTIFY_MS, 1500);
 const AUTO_THINKING = parseBoolean(process.env.PI_HYBRID_AUTO_THINKING, true);
 const YAMS_ENABLED = parseBoolean(process.env.PI_HYBRID_YAMS_ENABLED, true);
@@ -79,8 +83,8 @@ const TRACE_FILE = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/h
 const LMSTUDIO_MODELS_URL = process.env.PI_LMSTUDIO_MODELS_URL || "http://localhost:1234/api/v0/models";
 const LMSTUDIO_MODELS_TIMEOUT_MS = parsePositiveInt(process.env.PI_LMSTUDIO_MODELS_TIMEOUT_MS, 2500);
 
-const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.85);
-const COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 180000);
+const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.49);
+const COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 128000);
 const COMPACTION_COOLDOWN_MS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_COOLDOWN_MS, 180000);
 const COMPACTION_SAFETY_HEADROOM_TOKENS = parsePositiveInt(
   process.env.PI_HYBRID_COMPACTION_SAFETY_HEADROOM,
@@ -103,8 +107,52 @@ const RLM_RETRIEVE_LIMIT = parsePositiveInt(process.env.PI_RLM_RETRIEVE_LIMIT, 3
 const RLM_RETRIEVE_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_RETRIEVE_TIMEOUT_MS, 8000);
 const RLM_STORE_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_STORE_TIMEOUT_MS, 10000);
 const RLM_MIN_SCORE = 0.003;
+const RLM_SEARCH_SIMILARITY = process.env.PI_RLM_SEARCH_SIMILARITY || "0.001";
 const RLM_MAX_HINTS_IN_PROMPT = 3;
 const RLM_MAX_HINT_SNIPPET_CHARS = 400;
+
+// RLM extractor mode: "heuristic" (default) or "model" (uses sidecar LLM)
+const RLM_EXTRACTOR_MODE = (process.env.PI_RLM_EXTRACTOR_MODE || "heuristic") as "heuristic" | "model";
+const RLM_EXTRACTOR_PROVIDER = process.env.PI_RLM_EXTRACTOR_PROVIDER || "lmstudio";
+const RLM_EXTRACTOR_MODEL = process.env.PI_RLM_EXTRACTOR_MODEL || "qwen3.5-9b";
+const RLM_EXTRACTOR_MAX_TOKENS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_MAX_TOKENS, 1200);
+const RLM_EXTRACTOR_INACTIVITY_MS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_INACTIVITY_MS, 20000);
+const RLM_EXTRACTOR_MAX_INPUT_CHARS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_MAX_INPUT_CHARS, 12000);
+
+// --- DCS integration for RLM ---
+const RLM_DCS_SESSION_ENRICHMENT = parseBoolean(process.env.PI_RLM_DCS_SESSION_ENRICHMENT, false);
+const RLM_DCS_SESSION_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_DCS_SESSION_TIMEOUT_MS, 60_000);
+const RLM_DEEP_RECALL_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_DEEP_RECALL_TIMEOUT_MS, 120_000);
+const DCS_CLI = process.env.PI_RLM_DCS_CLI || "research-agent";
+
+const execFileAsync = promisify(execFile);
+
+// --- Context flooding protection ---
+const TOOL_OUTPUT_MAX_CHARS = parsePositiveInt(process.env.PI_TOOL_OUTPUT_MAX_CHARS, 8000);
+const TOOL_OUTPUT_HEAD_CHARS = parsePositiveInt(process.env.PI_TOOL_OUTPUT_HEAD_CHARS, 7000);
+const TOOL_OUTPUT_TAIL_CHARS = parsePositiveInt(process.env.PI_TOOL_OUTPUT_TAIL_CHARS, 500);
+// Compaction polling: instead of a fixed timeout that races with actual work,
+// we poll periodically to log progress and only declare a true stall after
+// prolonged inactivity.  The callbacks (onComplete/onError) are the sole
+// authority for clearing `compactionInFlight`.
+const COMPACTION_POLL_INTERVAL_MS = parsePositiveInt(process.env.PI_COMPACTION_POLL_INTERVAL_MS, 10_000);
+const COMPACTION_STALL_THRESHOLD_MS = parsePositiveInt(process.env.PI_COMPACTION_STALL_THRESHOLD_MS, 300_000); // 5 min hard stall
+const CONTEXT_BUDGET_WARN_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_WARN_TOKENS, 200000);
+const CONTEXT_BUDGET_STEER_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_STEER_TOKENS, 80000);
+
+// --- Token-aware context management tiers ---
+const CTX_TIER1_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER1_TOKENS, 64000);
+const CTX_TIER2_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER2_TOKENS, 128000);
+const CTX_TIER3_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER3_TOKENS, 192000);
+// Tier 1 tighter caps
+const TIER1_TOOL_OUTPUT_MAX_CHARS = parsePositiveInt(process.env.PI_TIER1_TOOL_OUTPUT_MAX_CHARS, 4000);
+const TIER1_CAP_OLD_ASSISTANT_TEXT_CHARS = parsePositiveInt(process.env.PI_TIER1_CAP_OLD_ASSISTANT_TEXT, 600);
+const TIER1_KEEP_RECENT_ASSISTANT_MESSAGES = parsePositiveInt(process.env.PI_TIER1_KEEP_RECENT_ASSISTANT, 4);
+// Tier 2: YAMS chunk retrieval integration (keepLastN for buildOptimizedContext)
+const TIER2_SEMANTIC_KEEP_LAST_N = parsePositiveInt(process.env.PI_TIER2_SEMANTIC_KEEP_LAST_N, 30);
+// Tier 3: emergency — keep only the last N messages verbatim
+const TIER3_KEEP_LAST_MESSAGES = parsePositiveInt(process.env.PI_TIER3_KEEP_LAST_MESSAGES, 8);
+const YAMS_FIRST_STEERING = `IMPORTANT: To avoid context flooding, always use YAMS (yams search) FIRST for content discovery. Use the YAMS search results to identify relevant files, then read only the specific files or line ranges you need. Do NOT use broad directory listings (find, ls -R), do NOT cat entire files. Steps: 1) yams search for relevant content, 2) read specific files/sections identified by YAMS, 3) grep only if YAMS returns no results for a specific pattern.`;
 
 type RlmChunk = {
   type: "objective" | "user-request" | "assistant-finding" | "file-context";
@@ -206,6 +254,14 @@ function extractText(content: any): string {
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
+function truncateToolOutput(text: string): { text: string; truncated: boolean; originalLength: number } {
+  if (text.length <= TOOL_OUTPUT_MAX_CHARS) return { text, truncated: false, originalLength: text.length };
+  const head = text.slice(0, TOOL_OUTPUT_HEAD_CHARS);
+  const tail = text.slice(-TOOL_OUTPUT_TAIL_CHARS);
+  const marker = `\n\n--- [TRUNCATED: ${text.length.toLocaleString()} chars -> ${(head.length + tail.length + 100).toLocaleString()} chars. Use targeted reads or YAMS search for full content.] ---\n\n`;
+  return { text: head + marker + tail, truncated: true, originalLength: text.length };
 }
 
 async function fetchLoadedContextWindow(modelId: string): Promise<number | null> {
@@ -414,8 +470,10 @@ function safeOptimizerText(candidate: string, fallback: string, limit: number): 
 }
 
 function parseOptimizerJson(raw: string, prompt: string): OptimizerResult | null {
+  // Strip thinking blocks (Qwen 3.5 models produce <think>...</think> by default)
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, " ").trim();
   const cleaned = extractJsonObject(
-    raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "")
+    stripped.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "")
   );
   try {
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
@@ -496,18 +554,58 @@ function parseOracleJson(raw: string): OracleReview | null {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+/**
+ * Stream a completion and abort only if no new events arrive within `inactivityMs`.
+ * As long as LM Studio is actively generating tokens, the timer resets and the
+ * request is never killed.
+ */
+async function completeWithInactivityTimeout(
+  model: any,
+  context: any,
+  options: Record<string, any>,
+  inactivityMs: number
+): Promise<any> {
+  const controller = new AbortController();
+  // Merge caller's signal: if the caller already provided one, chain them
+  const callerSignal = options.signal as AbortSignal | undefined;
+  if (callerSignal) {
+    callerSignal.addEventListener("abort", () => controller.abort(), { once: true });
   }
+  const s = stream(model, context, { ...options, signal: controller.signal });
+  let result: any = null;
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetTimer = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      controller.abort();
+    }, inactivityMs);
+  };
+
+  resetTimer();
+
+  try {
+    for await (const event of s) {
+      resetTimer();
+      if (event.type === "done") {
+        result = event.message;
+      } else if (event.type === "error") {
+        result = event.error;
+      }
+    }
+  } catch (err: any) {
+    if (controller.signal.aborted && !callerSignal?.aborted) {
+      throw new Error("inactivity_timeout");
+    }
+    throw err;
+  } finally {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+  }
+
+  if (!result) {
+    throw new Error("stream ended without result");
+  }
+  return result;
 }
 
 function shouldRunOracle(prompt: string, result: OptimizerResult, profile: OptimizationProfile): boolean {
@@ -524,7 +622,6 @@ function resolveOracleModel(ctx: ExtensionContext): any {
   const candidates = normalizeLines([
     ORACLE_MODEL,
     PRIMARY_MODEL,
-    "mistralai/ministral-3-14b-reasoning",
     "unsloth/qwen3.5-27b",
   ]);
 
@@ -537,6 +634,7 @@ function resolveOracleModel(ctx: ExtensionContext): any {
 
 function buildOraclePrompt(prompt: string, result: OptimizerResult, profile: OptimizationProfile): string {
   return [
+    "/no_think",
     "You are an oracle validator for a coding agent execution brief.",
     "Return STRICT JSON only with keys: verdict, confidence, issues, requiredChecks.",
     "Rules:",
@@ -585,21 +683,19 @@ async function runOracleReview(
   }
 
   try {
-    const response = await withTimeout(
-      complete(
-        model,
-        {
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: buildOraclePrompt(prompt, result, profile) }],
-              timestamp: Date.now(),
-            },
-          ],
-        },
-        { apiKey, maxTokens: ORACLE_MAX_TOKENS, signal }
-      ),
-      ORACLE_TIMEOUT_MS
+    const response = await completeWithInactivityTimeout(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: buildOraclePrompt(prompt, result, profile) }],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { apiKey, maxTokens: ORACLE_MAX_TOKENS, signal },
+      ORACLE_INACTIVITY_MS
     );
 
     const text = response.content
@@ -828,6 +924,7 @@ function buildSystemPromptPatch(
     "- Preserve original user intent and constraints exactly.",
     "- Favor concise tool plans when possible, but switch to deeper reasoning for risky changes.",
     "- Treat memory hints as candidate evidence and verify against current files/tool output.",
+    "- ALWAYS prefer YAMS search (yams search <query>) over find/ls for discovering files. Use YAMS results to guide targeted file reads.",
     profile === "research"
       ? "- For literature tasks, prioritize local repo evidence in code->papers->docs order before external prompts/skills lookups."
       : "- Keep tool usage minimal and targeted.",
@@ -851,17 +948,17 @@ function buildSystemPromptPatch(
 }
 
 function resolveOptimizerModels(ctx: ExtensionContext, profile: OptimizationProfile): any[] {
-  const preferred =
+  const raw =
     profile === "research"
       ? normalizeLines([
           RESEARCH_OPTIMIZER_MODEL,
-          PRIMARY_MODEL,
-          "qwen3.5-27b-heretic",
-          "mlx-community/qwen3.5-27b",
           DEFAULT_OPTIMIZER_MODEL,
+          PRIMARY_MODEL,
           FALLBACK_OPTIMIZER_MODEL,
         ])
       : normalizeLines([DEFAULT_OPTIMIZER_MODEL, PRIMARY_MODEL, FALLBACK_OPTIMIZER_MODEL]);
+  // Deduplicate: when env vars aren't set, DEFAULT_OPTIMIZER_MODEL may equal PRIMARY_MODEL
+  const preferred = [...new Set(raw)];
   const models: any[] = [];
   for (const id of preferred) {
     const model = ctx.modelRegistry.find(DEFAULT_OPTIMIZER_PROVIDER, id);
@@ -887,6 +984,7 @@ async function optimizeWithModel(
   const carryContext = state.carry.length > 0 ? state.carry.map((line) => `- ${line}`).join("\n") : "- none";
 
   const userMessage = [
+    "/no_think",
     "You are a prompt optimizer for a coding agent.",
     `Optimization profile: ${profile}`,
     "Return STRICT JSON only with keys:",
@@ -955,7 +1053,7 @@ async function optimizeWithModel(
     }
 
     try {
-      const response = await complete(
+      const response = await completeWithInactivityTimeout(
         model,
         {
           messages: [
@@ -966,7 +1064,8 @@ async function optimizeWithModel(
             },
           ],
         },
-        { apiKey, maxTokens: optimizerMaxTokens, signal }
+        { apiKey, maxTokens: optimizerMaxTokens, signal },
+        OPTIMIZER_INACTIVITY_MS
       );
 
       const text = response.content
@@ -1159,14 +1258,180 @@ function extractMemoryChunks(messages: any[], state: OptimizerState): RlmChunk[]
   return chunks.slice(0, RLM_MAX_CHUNKS_PER_COMPACTION);
 }
 
+// ---------------------------------------------------------------------------
+// RLM: Model-based memory extraction
+// ---------------------------------------------------------------------------
+
+function resolveRlmExtractorModel(ctx: ExtensionContext): any {
+  // RLM extractor only tries the configured sidecar model.
+  // On failure the caller falls back to heuristic extraction -- no other LLMs.
+  const candidates = normalizeLines([RLM_EXTRACTOR_MODEL]);
+
+  for (const id of candidates) {
+    const model = ctx.modelRegistry.find(RLM_EXTRACTOR_PROVIDER, id);
+    if (model) return model;
+  }
+  return null;
+}
+
+function buildRlmExtractorPrompt(messages: any[], state: OptimizerState): string {
+  const objectiveCtx = state.objective ? `Current objective: ${state.objective}` : "No objective set.";
+  const carryCtx = state.carry.length > 0 ? `Carry context: ${state.carry.join("; ")}` : "";
+
+  // Build a condensed transcript from the messages being evicted
+  let transcript = "";
+  let charBudget = RLM_EXTRACTOR_MAX_INPUT_CHARS;
+  for (const msg of messages) {
+    if (charBudget <= 0) break;
+    const role = msg?.role || "unknown";
+    let text = extractText(msg?.content) || "";
+    // Strip thinking blocks from assistant messages
+    if (role === "assistant") {
+      text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    }
+    if (!text || text.length < 30) continue;
+    const truncated = text.length > 1500 ? `${text.slice(0, 1500)}...` : text;
+    transcript += `[${role}]: ${truncated}\n\n`;
+    charBudget -= truncated.length + role.length + 6;
+  }
+
+  return [
+    "/no_think",
+    "You are a memory extraction system for a coding assistant. Your job is to extract the most important information from conversation messages that are about to be evicted from context.",
+    "",
+    "Return STRICT JSON only: an array of objects with keys: type, content",
+    "Rules:",
+    `- type must be one of: objective, user-request, assistant-finding, file-context`,
+    `- content must be a concise string (max ${RLM_MAX_CHUNK_CHARS} chars)`,
+    `- Return at most ${RLM_MAX_CHUNKS_PER_COMPACTION} chunks`,
+    "- Prioritize: decisions made, root causes found, user requirements, file paths worked on, key findings",
+    "- Omit trivial or transient information (greetings, acknowledgments, intermediate debugging steps)",
+    "- For file-context type: list the most important file paths mentioned, as a comma-separated string",
+    "- For assistant-finding type: summarize conclusions, decisions, discoveries, or root cause analyses",
+    "- For user-request type: capture the user's core intent or requirement",
+    "- For objective type: capture the overall session goal if discernible",
+    "- If no meaningful content can be extracted, return an empty array: []",
+    "",
+    objectiveCtx,
+    carryCtx,
+    "",
+    "Messages to extract from:",
+    transcript.trim(),
+  ].join("\n");
+}
+
+async function extractMemoryChunksWithModel(
+  ctx: ExtensionContext,
+  messages: any[],
+  state: OptimizerState
+): Promise<RlmChunk[] | null> {
+  const model = resolveRlmExtractorModel(ctx);
+  if (!model) {
+    trace("rlm_extractor_model_unavailable", { reason: "model_not_found", provider: RLM_EXTRACTOR_PROVIDER });
+    return null; // Signal to fall back to heuristic
+  }
+
+  const apiKey = await ctx.modelRegistry.getApiKey(model);
+  if (!apiKey) {
+    trace("rlm_extractor_model_unavailable", { reason: "no_api_key", modelId: model.id });
+    return null;
+  }
+
+  const prompt = buildRlmExtractorPrompt(messages, state);
+
+  trace("rlm_extractor_model_attempt", {
+    modelId: model.id,
+    messagesCount: messages.length,
+    promptChars: prompt.length,
+  });
+
+  try {
+    const response = await completeWithInactivityTimeout(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: prompt }],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { apiKey, maxTokens: RLM_EXTRACTOR_MAX_TOKENS },
+      RLM_EXTRACTOR_INACTIVITY_MS
+    );
+
+    const text = response.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n")
+      .trim();
+
+    // Strip markdown code fences if present
+    const jsonText = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```$/m, "").trim();
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      trace("rlm_extractor_model_parse_failed", { modelId: model.id, responseChars: text.length });
+      return null;
+    }
+
+    if (!Array.isArray(parsed)) {
+      trace("rlm_extractor_model_not_array", { modelId: model.id, type: typeof parsed });
+      return null;
+    }
+
+    const validTypes = new Set(["objective", "user-request", "assistant-finding", "file-context"]);
+    const chunks: RlmChunk[] = [];
+    for (const item of parsed) {
+      if (
+        item &&
+        typeof item.type === "string" &&
+        validTypes.has(item.type) &&
+        typeof item.content === "string" &&
+        item.content.length > 10
+      ) {
+        chunks.push({
+          type: item.type as RlmChunk["type"],
+          content: item.content.length > RLM_MAX_CHUNK_CHARS
+            ? `${item.content.slice(0, RLM_MAX_CHUNK_CHARS - 3)}...`
+            : item.content,
+        });
+      }
+      if (chunks.length >= RLM_MAX_CHUNKS_PER_COMPACTION) break;
+    }
+
+    trace("rlm_extractor_model_success", {
+      modelId: model.id,
+      extractedChunks: chunks.length,
+      chunkTypes: chunks.map((c) => c.type),
+    });
+
+    return chunks;
+  } catch (err: any) {
+    const reason = err?.message?.includes("inactivity_timeout") ? "inactivity_timeout" : "error";
+    trace("rlm_extractor_model_failed", {
+      modelId: model.id,
+      reason,
+      error: String(err).slice(0, 300),
+    });
+    return null; // Signal to fall back to heuristic
+  }
+}
+
 /** Store a single RLM chunk in YAMS via temp file. */
 async function storeRlmChunk(
   pi: ExtensionAPI,
   name: string,
   content: string,
-  metadata: string
+  metadata: string,
+  sessionId: string
 ): Promise<boolean> {
   const tmpFile = path.join(tmpdir(), `pi-rlm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+  // Include session-scoped tag for tiered retrieval (session-first, then global)
+  const tags = `${RLM_STORE_TAGS},session:${sessionId}`;
   try {
     fs.writeFileSync(tmpFile, content, "utf-8");
     const result = await pi.exec(
@@ -1179,7 +1444,7 @@ async function storeRlmChunk(
         "--collection",
         RLM_COLLECTION,
         "--tags",
-        RLM_STORE_TAGS,
+        tags,
         "--metadata",
         metadata,
       ],
@@ -1213,7 +1478,7 @@ async function storeMemoryChunks(
     const chunk = chunks[i];
     const name = `pi-rlm-${sessionId}-t${turnNumber}-${chunk.type}-${i}`;
     const metadata = `chunk_type=${chunk.type},session_id=${sessionId},turn=${turnNumber},objective=${truncatedObjective}`;
-    const ok = await storeRlmChunk(pi, name, chunk.content, metadata);
+    const ok = await storeRlmChunk(pi, name, chunk.content, metadata, sessionId);
     if (ok) {
       stored += 1;
     } else {
@@ -1224,11 +1489,51 @@ async function storeMemoryChunks(
   return { stored, failed };
 }
 
-/** Retrieve relevant session memory chunks from YAMS. */
+/** Parse YAMS search results into RlmMemoryHint[], filtering by score and deduplicating. */
+function parseRlmSearchResults(
+  stdout: string,
+  seenIds: Set<string>
+): RlmMemoryHint[] {
+  try {
+    const parsed = JSON.parse(stdout);
+    const results: any[] = Array.isArray(parsed) ? parsed : parsed.results || [];
+    const hints: RlmMemoryHint[] = [];
+    for (const r of results) {
+      if (
+        typeof r.score === "number" &&
+        r.score >= RLM_MIN_SCORE &&
+        typeof r.snippet === "string" &&
+        r.snippet.length > 0
+      ) {
+        // Deduplicate across phases by YAMS doc id (or path as fallback)
+        const dedupeKey = String(r.id || r.path || r.snippet.slice(0, 80));
+        if (seenIds.has(dedupeKey)) continue;
+        seenIds.add(dedupeKey);
+        hints.push({
+          snippet: r.snippet.replace(/\s+/g, " ").trim(),
+          score: r.score,
+          chunkType: r.metadata?.chunk_type || "unknown",
+        });
+      }
+    }
+    return hints;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Retrieve relevant session memory chunks from YAMS.
+ * Two-phase tiered retrieval:
+ *   Phase 1: Session-scoped results (tag: session:<sessionId>) -- prioritize current session context.
+ *   Phase 2: Global RLM results (tag: rlm) -- fill remaining slots with cross-session long-term memory.
+ * Deduplication ensures no snippet appears twice.
+ */
 async function fetchRlmMemory(
   pi: ExtensionAPI,
   prompt: string,
   state: OptimizerState,
+  sessionId: string,
   signal?: AbortSignal
 ): Promise<RlmMemoryHint[]> {
   if (!RLM_ENABLED) return [];
@@ -1239,42 +1544,172 @@ async function fetchRlmMemory(
 
   if (!query.trim()) return [];
 
-  const result = await pi.exec(
-    "yams",
-    [
-      "search",
-      "--json",
-      "--tags",
-      "rlm",
-      "--limit",
-      String(RLM_RETRIEVE_LIMIT + 2),
-      query,
-    ],
-    { timeout: RLM_RETRIEVE_TIMEOUT_MS, signal }
-  );
+  const seenIds = new Set<string>();
+  const allHints: RlmMemoryHint[] = [];
 
-  if (result.code !== 0 || !result.stdout) return [];
-
+  // Phase 1: Session-scoped retrieval (current session memories)
   try {
-    const parsed = JSON.parse(result.stdout);
-    const results: any[] = Array.isArray(parsed) ? parsed : parsed.results || [];
-    return results
-      .filter(
-        (r: any) =>
-          typeof r.score === "number" &&
-          r.score >= RLM_MIN_SCORE &&
-          typeof r.snippet === "string" &&
-          r.snippet.length > 0
-      )
-      .slice(0, RLM_RETRIEVE_LIMIT)
-      .map((r: any) => ({
-        snippet: r.snippet.replace(/\s+/g, " ").trim(),
-        score: r.score,
-        chunkType: r.metadata?.chunk_type || "unknown",
-      }));
+    const sessionResult = await pi.exec(
+      "yams",
+      [
+        "search",
+        "--json",
+        "--tags",
+        `session:${sessionId}`,
+        "--similarity",
+        RLM_SEARCH_SIMILARITY,
+        "--limit",
+        String(RLM_RETRIEVE_LIMIT + 2),
+        query,
+      ],
+      { timeout: RLM_RETRIEVE_TIMEOUT_MS, signal }
+    );
+    if (sessionResult.code === 0 && sessionResult.stdout) {
+      const sessionHints = parseRlmSearchResults(sessionResult.stdout, seenIds);
+      allHints.push(...sessionHints.slice(0, RLM_RETRIEVE_LIMIT));
+    }
   } catch {
-    return [];
+    // Session-scoped search failed; continue to global phase.
   }
+
+  // Phase 2: Global RLM retrieval (cross-session long-term memory)
+  const remaining = RLM_RETRIEVE_LIMIT - allHints.length;
+  if (remaining > 0 && !signal?.aborted) {
+    try {
+      const globalResult = await pi.exec(
+        "yams",
+        [
+          "search",
+          "--json",
+          "--tags",
+          "rlm",
+          "--similarity",
+          RLM_SEARCH_SIMILARITY,
+          "--limit",
+          String(remaining + 2),
+          query,
+        ],
+        { timeout: RLM_RETRIEVE_TIMEOUT_MS, signal }
+      );
+      if (globalResult.code === 0 && globalResult.stdout) {
+        const globalHints = parseRlmSearchResults(globalResult.stdout, seenIds);
+        allHints.push(...globalHints.slice(0, remaining));
+      }
+    } catch {
+      // Global search failed; return whatever session phase found.
+    }
+  }
+
+  return allHints.slice(0, RLM_RETRIEVE_LIMIT);
+}
+
+// ---------------------------------------------------------------------------
+// DCS integration helpers for RLM enrichment and deep recall
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the final output from DCS CLI stdout.
+ * DCS prints a rich log then an "Output" marker followed by the actual result.
+ */
+function extractDcsOutput(stdout: string): string {
+  const marker = "Output";
+  const idx = stdout.lastIndexOf(marker);
+  if (idx < 0) return stdout.trim();
+  const tail = stdout.slice(idx + marker.length);
+  const cleaned = tail.replace(/^[\s\-\u2500]+/gm, "").trim();
+  if (!cleaned) return stdout.trim();
+  return cleaned;
+}
+
+/**
+ * Run the DCS research-agent CLI with a task and timeout.
+ * Returns the extracted output string on success, null on failure.
+ */
+async function runDcs(
+  task: string,
+  timeoutMs: number,
+  contextProfile = "small"
+): Promise<{ output: string | null; error?: string }> {
+  const args = ["run", task, "--context-profile", contextProfile];
+  try {
+    const { stdout, stderr } = await execFileAsync(DCS_CLI, args, {
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+    const output = extractDcsOutput(stdout || stderr || "");
+    if (!output || output.length < 20) {
+      return { output: null, error: "empty_output" };
+    }
+    // Strip residual <think> blocks
+    const cleaned = output.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    return { output: cleaned };
+  } catch (err: any) {
+    const killed = err?.killed === true;
+    return {
+      output: null,
+      error: killed ? "timeout" : `exec_error: ${String(err?.message || err).slice(0, 200)}`,
+    };
+  }
+}
+
+/**
+ * DCS session-start enrichment: given RLM memories from previous sessions,
+ * synthesize a rich context briefing using DCS multi-hop retrieval.
+ */
+async function enrichSessionWithDcs(
+  memories: Array<{ snippet: string; score: number; path?: string }>
+): Promise<string | null> {
+  if (!RLM_DCS_SESSION_ENRICHMENT || memories.length === 0) return null;
+
+  const memoryText = memories
+    .map((m, i) => `[Memory ${i + 1}] (score: ${m.score.toFixed(3)})\n${truncate(m.snippet, 600)}`)
+    .join("\n\n");
+
+  const task = [
+    "Given these session memories from previous coding sessions, synthesize a rich context briefing for starting a new session.",
+    "Search project knowledge in YAMS to connect these memories to the broader codebase and recent changes.",
+    "Focus on: active goals, recent decisions, blocking issues, and key file paths that matter right now.",
+    "Be concise but specific. Preserve exact file paths and function names.",
+    "",
+    `<memories>\n${memoryText}\n</memories>`,
+  ].join("\n");
+
+  trace("dcs_session_enrichment_attempt", { memoryCount: memories.length });
+
+  const result = await runDcs(task, RLM_DCS_SESSION_TIMEOUT_MS, "small");
+  if (result.output) {
+    trace("dcs_session_enrichment_success", { outputChars: result.output.length });
+    return result.output;
+  }
+
+  trace("dcs_session_enrichment_failed", { error: result.error });
+  return null;
+}
+
+/**
+ * DCS deep recall: run a deep multi-hop retrieval on a user-specified topic.
+ * Returns the synthesized result or null.
+ */
+async function dcsDeepRecall(topic: string): Promise<string | null> {
+  const task = [
+    `Deep recall on topic: ${topic}`,
+    "Search all available memories, project knowledge, and code context in YAMS.",
+    "Synthesize a comprehensive answer covering: relevant decisions, file paths, code patterns, and any known issues.",
+    "Include exact file paths, function names, and configuration values where applicable.",
+    "Be thorough -- this is an on-demand deep retrieval request.",
+  ].join("\n");
+
+  trace("dcs_deep_recall_attempt", { topic: truncate(topic, 200) });
+
+  const result = await runDcs(task, RLM_DEEP_RECALL_TIMEOUT_MS, "large");
+  if (result.output) {
+    trace("dcs_deep_recall_success", { topic: truncate(topic, 200), outputChars: result.output.length });
+    return result.output;
+  }
+
+  trace("dcs_deep_recall_failed", { topic: truncate(topic, 200), error: result.error });
+  return null;
 }
 
 export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
@@ -1296,16 +1731,72 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     failures: 0,
   };
   let compactionInFlight = false;
+  let compactionStartedAt = 0;
+  let compactionPollTimer: ReturnType<typeof setInterval> | null = null;
   let unavailableNotified = false;
   let yamsUnavailableNotified = false;
   let lastCompactionAt = 0;
   let effectiveContextWindow: number | null = null;
+
+  /** Stop the compaction-progress poll timer. */
+  function stopCompactionPoll(): void {
+    if (compactionPollTimer !== null) {
+      clearInterval(compactionPollTimer);
+      compactionPollTimer = null;
+    }
+  }
+
+  /**
+   * Start polling to monitor compaction progress.
+   * We never forcibly reset `compactionInFlight` — only the real onComplete/onError
+   * callbacks do that.  The poll just logs warnings so operators can see what's happening.
+   * After COMPACTION_STALL_THRESHOLD_MS with no resolution, we log a critical stall
+   * warning and clear the flag as a last resort so future compactions aren't blocked
+   * forever.
+   */
+  function startCompactionPoll(ctx: ExtensionContext): void {
+    stopCompactionPoll();
+    compactionPollTimer = setInterval(() => {
+      if (!compactionInFlight) {
+        // Compaction resolved while we were sleeping — clean up.
+        stopCompactionPoll();
+        return;
+      }
+      const elapsed = Date.now() - compactionStartedAt;
+      const elapsedSec = Math.round(elapsed / 1000);
+
+      if (elapsed >= COMPACTION_STALL_THRESHOLD_MS) {
+        // True stall — the 9b model or DCS pipeline is unresponsive.
+        compactionInFlight = false;
+        stopCompactionPoll();
+        trace("compaction_stall_cleared", {
+          elapsedMs: elapsed,
+          stallThresholdMs: COMPACTION_STALL_THRESHOLD_MS,
+        });
+        notify(
+          ctx,
+          `Compaction appears stalled after ${elapsedSec}s — clearing flag so future compactions can proceed.`,
+          "warning"
+        );
+        return;
+      }
+
+      // Periodic progress log (not a failure — just visibility).
+      trace("compaction_poll", { elapsedMs: elapsed });
+      if (elapsed > 60_000) {
+        // Only surface to user after 1 min so short compactions stay quiet.
+        notify(ctx, `Compaction still processing (${elapsedSec}s elapsed)...`);
+      }
+    }, COMPACTION_POLL_INTERVAL_MS);
+  }
 
   // RLM session state
   let rlmSessionId = `pi-${Date.now().toString(36)}`;
   let rlmTurnCounter = 0;
   let rlmLastMemoryHints: RlmMemoryHint[] = [];
   let rlmUnavailableNotified = false;
+  let rlmDcsEnriched = false;
+  let dcsEnrichmentText: string | null = null;
 
   function setStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
@@ -1326,6 +1817,9 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       { role: "research-optimizer", provider: DEFAULT_OPTIMIZER_PROVIDER, id: RESEARCH_OPTIMIZER_MODEL },
       { role: "oracle", provider: ORACLE_PROVIDER, id: ORACLE_MODEL },
     ];
+    if (RLM_ENABLED && RLM_EXTRACTOR_MODE === "model") {
+      required.push({ role: "rlm-extractor", provider: RLM_EXTRACTOR_PROVIDER, id: RLM_EXTRACTOR_MODEL });
+    }
     const missing: string[] = [];
     for (const check of required) {
       if (!ctx.modelRegistry.find(check.provider, check.id)) {
@@ -1347,12 +1841,21 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     rlmTurnCounter = 0;
     rlmLastMemoryHints = [];
     rlmUnavailableNotified = false;
+    rlmDcsEnriched = false;
+    dcsEnrichmentText = null;
     const configuredContextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
-    effectiveContextWindow = await fetchLoadedContextWindow(ctx.model?.id || "");
+    const contextWindowOverride = parsePositiveInt(process.env.PI_HYBRID_CONTEXT_WINDOW_OVERRIDE, 0);
+    effectiveContextWindow = contextWindowOverride > 0
+      ? contextWindowOverride
+      : await fetchLoadedContextWindow(ctx.model?.id || "");
     setStatus(ctx);
     const missingModels = auditModelAvailability(ctx);
     const memoryMode = YAMS_ENABLED ? "yams:on" : "yams:off";
     const rlmMode = RLM_ENABLED ? "rlm:on" : "rlm:off";
+    const rlmExtractorInfo = RLM_ENABLED && RLM_EXTRACTOR_MODE === "model"
+      ? `rlm-extractor:model(${RLM_EXTRACTOR_MODEL})`
+      : "rlm-extractor:heuristic";
+    const dcsMode = RLM_DCS_SESSION_ENRICHMENT ? "dcs:on" : "dcs:off";
     trace("session_start", {
       optimizerModel: state.optimizerModel,
       primaryModel: PRIMARY_MODEL,
@@ -1360,14 +1863,17 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       effectiveContextWindow,
       memoryMode,
       rlmMode,
+      rlmExtractorMode: RLM_EXTRACTOR_MODE,
+      rlmExtractorModel: RLM_EXTRACTOR_MODE === "model" ? RLM_EXTRACTOR_MODEL : null,
       rlmSessionId,
+      dcsSessionEnrichment: RLM_DCS_SESSION_ENRICHMENT,
       optimizations: state.optimizations,
       optimizerAttempts: state.optimizerAttempts,
       optimizerSuccesses: state.optimizerSuccesses,
       optimizerFallbacks: state.optimizerFallbacks,
       missingModels,
     });
-    notify(ctx, `Hybrid optimizer active (${state.optimizerModel}, ${memoryMode}, ${rlmMode}).`);
+    notify(ctx, `Hybrid optimizer active (${state.optimizerModel}, ${memoryMode}, ${rlmMode}, ${rlmExtractorInfo}, ${dcsMode}).`);
     if (missingModels.length > 0) {
       notify(
         ctx,
@@ -1381,11 +1887,29 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       effectiveContextWindow > 0 &&
       effectiveContextWindow < configuredContextWindow
     ) {
-      notify(
-        ctx,
-        `Hybrid context mismatch: configured=${configuredContextWindow.toLocaleString()} loaded=${effectiveContextWindow.toLocaleString()} (using loaded limit).`,
-        "warning"
-      );
+      // Sanity floor: if LM Studio reports a context window < 10% of configured,
+      // override to configured value. This catches the n_ctx=4096 bug in LM Studio
+      // where loaded_context_length doesn't reflect the actual model capability.
+      if (effectiveContextWindow < configuredContextWindow * 0.1) {
+        trace("context_window_override", {
+          reason: "loaded_value_suspiciously_low",
+          loaded: effectiveContextWindow,
+          configured: configuredContextWindow,
+          using: configuredContextWindow,
+        });
+        notify(
+          ctx,
+          `Context window ${effectiveContextWindow.toLocaleString()} << configured ${configuredContextWindow.toLocaleString()}; overriding to configured value.`,
+          "warning"
+        );
+        effectiveContextWindow = configuredContextWindow;
+      } else {
+        notify(
+          ctx,
+          `Hybrid context mismatch: configured=${configuredContextWindow.toLocaleString()} loaded=${effectiveContextWindow.toLocaleString()} (using loaded limit).`,
+          "warning"
+        );
+      }
     }
   });
 
@@ -1398,9 +1922,32 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     if (!Array.isArray(messages) || messages.length === 0) return;
 
     rlmTurnCounter += 1;
-    const chunks = extractMemoryChunks(messages, state);
+
+    let chunks: RlmChunk[];
+    let extractionSource: "model" | "heuristic" | "model-fallback" = "heuristic";
+
+    if (RLM_EXTRACTOR_MODE === "model") {
+      const modelChunks = await extractMemoryChunksWithModel(ctx, messages, state);
+      if (modelChunks !== null) {
+        chunks = modelChunks;
+        extractionSource = "model";
+      } else {
+        // Model failed/unavailable, fall back to heuristic
+        chunks = extractMemoryChunks(messages, state);
+        extractionSource = "model-fallback";
+        trace("rlm_extractor_fallback", { reason: "model_returned_null", turnNumber: rlmTurnCounter });
+      }
+    } else {
+      chunks = extractMemoryChunks(messages, state);
+    }
+
     if (chunks.length === 0) {
-      trace("rlm_extraction", { chunkCount: 0, messagesProcessed: messages.length, turnNumber: rlmTurnCounter });
+      trace("rlm_extraction", {
+        chunkCount: 0,
+        messagesProcessed: messages.length,
+        turnNumber: rlmTurnCounter,
+        extractionSource,
+      });
       return;
     }
 
@@ -1409,8 +1956,9 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       messagesProcessed: messages.length,
       turnNumber: rlmTurnCounter,
       chunkTypes: chunks.map((c) => c.type),
+      extractionSource,
     });
-    notify(ctx, `RLM: extracting ${chunks.length} memory chunks from ${messages.length} evicted messages.`);
+    notify(ctx, `RLM: extracting ${chunks.length} memory chunks (${extractionSource}) from ${messages.length} evicted messages.`);
 
     // Fire-and-forget: store in background, don't block compaction
     storeMemoryChunks(pi, chunks, rlmSessionId, rlmTurnCounter, state.objective).then(
@@ -1549,6 +2097,25 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("rlm-deep-recall", {
+    description: "Run DCS deep multi-hop recall on a topic (usage: /rlm-deep-recall <topic>)",
+    handler: async (args, ctx) => {
+      const topic = (args || "").trim();
+      if (!topic) {
+        notify(ctx, "Usage: /rlm-deep-recall <topic>\nExample: /rlm-deep-recall compaction bug timeline", "warning");
+        return;
+      }
+
+      notify(ctx, `Starting DCS deep recall on: ${truncate(topic, 120)}...`);
+      const result = await dcsDeepRecall(topic);
+      if (result) {
+        notify(ctx, `[DCS Deep Recall — ${truncate(topic, 80)}]\n${result}`);
+      } else {
+        notify(ctx, `DCS deep recall returned no results for: ${truncate(topic, 120)}`, "warning");
+      }
+    },
+  });
+
   pi.registerCommand("hybrid-proof", {
     description: "Probe optimizer model availability",
     handler: async (_args, ctx) => {
@@ -1665,7 +2232,39 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", async (event, ctx) => {
     const prompt = (event.prompt || "").trim();
-    if (shouldSkipPrompt(prompt)) return;
+
+    // For watchdog retry/cron prompts: skip full optimization but still inject
+    // context budget steering so the LLM is aware of context pressure.
+    if (shouldSkipPrompt(prompt)) {
+      const configuredCw = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : 128000;
+      const usageTokens = ctx.getContextUsage()?.tokens ?? null;
+      const steering = buildContextSteering(usageTokens, configuredCw, effectiveContextWindow);
+      if (steering && usageTokens !== null && usageTokens >= CONTEXT_BUDGET_STEER_TOKENS) {
+        const budgetMsg = [
+          `[CONTEXT BUDGET WARNING: ${usageTokens.toLocaleString()} tokens used (${Math.round(steering.usageRatio * 100)}% of ${steering.contextWindow.toLocaleString()}).`,
+          YAMS_FIRST_STEERING,
+          `This is a retry/recovery prompt. Keep output minimal, complete only the immediate objective, avoid broad exploration.]`,
+        ].join("\n");
+        trace("skip_prompt_budget_steering", {
+          tokens: usageTokens,
+          pressure: steering.pressure,
+          prompt: prompt.slice(0, 100),
+        });
+        const response: any = {
+          systemPrompt: [event.systemPrompt, budgetMsg].join("\n\n"),
+        };
+        if (usageTokens >= CONTEXT_BUDGET_WARN_TOKENS) {
+          response.message = {
+            customType: "hybrid-retry-budget-warning",
+            content: budgetMsg,
+            display: false,
+          };
+        }
+        return response;
+      }
+      return;
+    }
+
     const signal = (event as any).signal as AbortSignal | undefined;
     const cleanedPrompt = stripWrapperBlocks(prompt);
     const effectivePrompt = cleanedPrompt || prompt;
@@ -1683,6 +2282,35 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
         usageRatio: contextSteering.usageRatio,
         pressure: contextSteering.pressure,
       });
+    }
+
+    // --- Pre-flight context budget: inject YAMS-first steering when context is heavy ---
+    let contextBudgetMessage: string | null = null;
+    if (contextSteering) {
+      const tokens = contextSteering.usageTokens;
+      const hasDirectoryPaths = /(?:@\.\/|\.\/\S+\/|~\/\S+\/)/.test(effectivePrompt);
+
+      if (tokens >= CONTEXT_BUDGET_WARN_TOKENS) {
+        contextBudgetMessage = [
+          `[CONTEXT BUDGET WARNING: ${tokens.toLocaleString()} tokens used (${Math.round(contextSteering.usageRatio * 100)}% of ${contextSteering.contextWindow.toLocaleString()}).`,
+          YAMS_FIRST_STEERING,
+          `CRITICAL: Context window is nearly full. Complete only the highest-priority objective. Keep output minimal.]`,
+        ].join("\n");
+        trace("context_budget_warning", { tokens, threshold: CONTEXT_BUDGET_WARN_TOKENS, level: "critical", hasDirectoryPaths });
+      } else if (tokens >= CONTEXT_BUDGET_STEER_TOKENS && hasDirectoryPaths) {
+        contextBudgetMessage = [
+          `[CONTEXT BUDGET NOTICE: ${tokens.toLocaleString()} tokens used. Directory paths detected in prompt.`,
+          YAMS_FIRST_STEERING,
+          `Avoid expanding entire directories -- use YAMS to find relevant files first.]`,
+        ].join("\n");
+        trace("context_budget_warning", { tokens, threshold: CONTEXT_BUDGET_STEER_TOKENS, level: "steer", hasDirectoryPaths });
+      } else if (hasDirectoryPaths) {
+        contextBudgetMessage = [
+          `[SEARCH GUIDANCE: Directory paths detected in prompt.`,
+          `Prefer using YAMS search first to find relevant files, then read specific files/sections. This is more efficient than broad directory listings.]`,
+        ].join("\n");
+        trace("context_budget_guidance", { tokens, hasDirectoryPaths });
+      }
     }
 
     if (PROFILE_EMBED_ROUTER && YAMS_ENABLED && !signal?.aborted) {
@@ -1808,7 +2436,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     // RLM: Retrieve relevant session memory chunks
     if (RLM_ENABLED && !signal?.aborted) {
       try {
-        const rlmHints = await fetchRlmMemory(pi, effectivePrompt, state, signal);
+        const rlmHints = await fetchRlmMemory(pi, effectivePrompt, state, rlmSessionId, signal);
         if (rlmHints.length > 0) {
           rlmLastMemoryHints = rlmHints;
           trace("rlm_retrieve", { count: rlmHints.length, topScore: rlmHints[0]?.score });
@@ -1825,6 +2453,31 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
         }
         if (!signal?.aborted) {
           console.error("[hybrid-optimizer] RLM retrieval failed:", error);
+        }
+      }
+    }
+
+    // DCS session enrichment: on first turn only, if RLM returned memories,
+    // run DCS multi-hop retrieval to synthesize a richer context briefing.
+    if (
+      RLM_DCS_SESSION_ENRICHMENT &&
+      !rlmDcsEnriched &&
+      rlmLastMemoryHints.length > 0 &&
+      !signal?.aborted
+    ) {
+      rlmDcsEnriched = true; // set immediately to prevent re-entry
+      try {
+        const enrichment = await enrichSessionWithDcs(
+          rlmLastMemoryHints.map((h) => ({ snippet: h.snippet, score: h.score }))
+        );
+        if (enrichment) {
+          dcsEnrichmentText = enrichment;
+          notify(ctx, `DCS session enrichment complete (${enrichment.length} chars).`);
+        }
+      } catch (error) {
+        trace("dcs_session_enrichment_error", { error: String(error).slice(0, 200) });
+        if (!signal?.aborted) {
+          console.error("[hybrid-optimizer] DCS session enrichment failed:", error);
         }
       }
     }
@@ -1864,12 +2517,35 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     }
 
     setStatus(ctx);
+    const systemPromptParts = [
+      event.systemPrompt,
+      buildSystemPromptPatch(state, result, profile, oracleReview, contextSteering, rlmLastMemoryHints),
+    ];
+
+    // Append DCS enrichment briefing if available (first turn only)
+    if (dcsEnrichmentText) {
+      systemPromptParts.push(
+        `[DCS Context Briefing — synthesized from session memories and project knowledge]\n${dcsEnrichmentText}`
+      );
+      // Clear after first injection to avoid re-injecting on subsequent turns
+      dcsEnrichmentText = null;
+    }
+
+    // Append YAMS-first steering to system prompt when context budget demands it
+    if (contextBudgetMessage && contextSteering &&
+        (contextSteering.pressure === "high" || contextSteering.pressure === "critical")) {
+      systemPromptParts.push(contextBudgetMessage);
+    }
+
     const response: any = {
-      systemPrompt: `${event.systemPrompt}\n\n${buildSystemPromptPatch(state, result, profile, oracleReview, contextSteering, rlmLastMemoryHints)}`,
+      systemPrompt: systemPromptParts.join("\n\n"),
     };
 
     if (FORWARD_OPTIMIZED_MESSAGE) {
-      const forwarded = buildForwardedPrompt(effectivePrompt, result);
+      let forwarded = buildForwardedPrompt(effectivePrompt, result);
+      if (contextBudgetMessage) {
+        forwarded = `${forwarded}\n\n${contextBudgetMessage}`;
+      }
       response.message = {
         customType: "hybrid-forwarded-prompt",
         content: forwarded,
@@ -1879,13 +2555,76 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
         chars: forwarded.length,
         profile,
         source,
+        hasContextBudgetWarning: !!contextBudgetMessage,
       });
+    } else if (contextBudgetMessage) {
+      response.message = {
+        customType: "hybrid-context-budget",
+        content: contextBudgetMessage,
+        display: false,
+      };
     }
 
     return response;
   });
 
-  pi.on("context", async (event) => {
+  pi.on("context", async (event, ctx) => {
+    // -----------------------------------------------------------------------
+    // Determine current token tier for progressive context management.
+    // Tier 0 (< 64K):  Standard structural dedup (original behavior)
+    // Tier 1 (64K–128K): Tighter caps — tool→4K, old assistant→600, strip ALL
+    //                     thinking, keep last 4 assistant messages
+    // Tier 2 (128K–192K): Tier 1 + replace old messages with YAMS-retrieved chunks
+    // Tier 3 (> 192K): Tier 2 + keep only last 8 messages verbatim
+    // -----------------------------------------------------------------------
+    const usage = ctx.getContextUsage();
+    const tokens = usage?.tokens ?? 0;
+    const tier = tokens >= CTX_TIER3_TOKENS ? 3
+      : tokens >= CTX_TIER2_TOKENS ? 2
+      : tokens >= CTX_TIER1_TOKENS ? 1
+      : 0;
+
+    // Select tier-appropriate caps
+    const toolOutputMaxChars = tier >= 1 ? TIER1_TOOL_OUTPUT_MAX_CHARS : TOOL_OUTPUT_MAX_CHARS;
+    const capOldAssistantChars = tier >= 1 ? TIER1_CAP_OLD_ASSISTANT_TEXT_CHARS : CAP_OLD_ASSISTANT_TEXT_CHARS;
+    const keepRecentAssistant = tier >= 1 ? TIER1_KEEP_RECENT_ASSISTANT_MESSAGES : KEEP_RECENT_ASSISTANT_MESSAGES;
+    const stripAllThinking = tier >= 1; // Tier 0: strip only old assistant thinking; Tier 1+: strip ALL
+
+    if (tier > 0) {
+      trace("context_tier_active", { tier, tokens, toolOutputMaxChars, capOldAssistantChars, keepRecentAssistant });
+    }
+
+    // --- Tool output truncation: cap large tool results to prevent context flooding ---
+    let toolTruncations = 0;
+    for (const message of event.messages) {
+      if ((message as any)?.role !== "toolResult" || !Array.isArray((message as any)?.content)) continue;
+      const toolMsg = message as any;
+      for (let j = 0; j < toolMsg.content.length; j++) {
+        const block = toolMsg.content[j];
+        if (block?.type === "text" && typeof block.text === "string" && block.text.length > toolOutputMaxChars) {
+          const result = truncateToolOutput(block.text);
+          // Re-truncate to tier-appropriate cap if needed
+          let truncatedText = result.text;
+          if (truncatedText.length > toolOutputMaxChars) {
+            truncatedText = truncate(truncatedText, toolOutputMaxChars);
+          }
+          if (truncatedText !== block.text) {
+            toolMsg.content[j] = { ...block, text: truncatedText };
+            toolTruncations++;
+            trace("tool_output_truncated", {
+              toolName: toolMsg.toolName || "unknown",
+              originalChars: block.text.length,
+              truncatedChars: truncatedText.length,
+              tier,
+            });
+          }
+        }
+      }
+    }
+    if (toolTruncations > 0) {
+      trace("tool_output_truncation_pass", { count: toolTruncations, tier });
+    }
+
     const messageTexts = event.messages.map((message: any) => extractText(message?.content).trim());
 
     let toolsSeen = 0;
@@ -1949,31 +2688,70 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       mutated = true;
     }
 
-    const filtered = event.messages.filter((_message: any, index: number) => keep[index]);
+    let filtered = event.messages.filter((_message: any, index: number) => keep[index]);
+
+    // --- Tier 2+: Replace old messages with YAMS-retrieved context chunks ---
+    if (tier >= 2) {
+      const chunkerStats = contextChunker.stats();
+      if (chunkerStats.cachedChunks > 0) {
+        const beforeLen = filtered.length;
+        filtered = contextChunker.buildOptimizedContext(filtered, TIER2_SEMANTIC_KEEP_LAST_N);
+        const afterLen = filtered.length;
+        if (afterLen !== beforeLen) {
+          mutated = true;
+          trace("context_chunk_retrieval_compression", {
+            tier,
+            beforeMessages: beforeLen,
+            afterMessages: afterLen,
+            cachedChunks: chunkerStats.cachedChunks,
+          });
+        }
+      }
+    }
+
+    // --- Tier 3: Emergency — keep only last N messages verbatim ---
+    if (tier >= 3 && filtered.length > TIER3_KEEP_LAST_MESSAGES) {
+      const beforeLen = filtered.length;
+      filtered = filtered.slice(filtered.length - TIER3_KEEP_LAST_MESSAGES);
+      mutated = true;
+      trace("context_tier3_emergency_trim", {
+        tier,
+        beforeMessages: beforeLen,
+        afterMessages: filtered.length,
+        keptMessages: TIER3_KEEP_LAST_MESSAGES,
+      });
+    }
 
     const assistantIndexes: number[] = [];
     for (let i = 0; i < filtered.length; i += 1) {
       if (filtered[i]?.role === "assistant") assistantIndexes.push(i);
     }
-    const keepSet = new Set(assistantIndexes.slice(Math.max(0, assistantIndexes.length - KEEP_RECENT_ASSISTANT_MESSAGES)));
+    const keepSet = new Set(assistantIndexes.slice(Math.max(0, assistantIndexes.length - keepRecentAssistant)));
 
     const compacted = filtered.map((message: any, index: number) => {
       if (message?.role !== "assistant" || !Array.isArray(message?.content)) return message;
-      if (keepSet.has(index)) return message;
+      // Tier 1+: strip thinking from ALL assistant messages (including recent)
+      // Tier 0: only strip thinking from old assistant messages (original behavior)
+      const isRecent = keepSet.has(index);
+      if (!stripAllThinking && isRecent) return message;
 
       let changed = false;
       const nextContent = message.content
         .filter((block: any) => {
           if (block?.type === "thinking") {
-            changed = true;
-            return false;
+            // Tier 0: strip only from old messages; Tier 1+: strip from all
+            if (stripAllThinking || !isRecent) {
+              changed = true;
+              return false;
+            }
           }
           return true;
         })
         .map((block: any) => {
-          if (block?.type === "text" && typeof block.text === "string" && block.text.length > CAP_OLD_ASSISTANT_TEXT_CHARS) {
+          // Cap text in old (non-recent) messages
+          if (!isRecent && block?.type === "text" && typeof block.text === "string" && block.text.length > capOldAssistantChars) {
             changed = true;
-            return { ...block, text: truncate(block.text, CAP_OLD_ASSISTANT_TEXT_CHARS) };
+            return { ...block, text: truncate(block.text, capOldAssistantChars) };
           }
           return block;
         });
@@ -1993,6 +2771,8 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
         toolsKept,
         skillsSeen,
         skillsKept,
+        tier,
+        tokens,
       });
     }
 
@@ -2003,6 +2783,43 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
 
   pi.on("turn_end", async (_event, ctx) => {
     if (compactionInFlight) return;
+
+    // Don't attempt compaction if the turn ended abnormally (model error/termination)
+    // UNLESS context usage is critically high. Skipping compaction on abnormal stops
+    // while context keeps growing is a death spiral — each retry bloats context further,
+    // gets aborted again, skips compaction again, etc.
+    const turnMessage = (_event as any).message;
+    const stopReason = turnMessage?.stopReason;
+    const CRITICAL_CONTEXT_RATIO = 0.80;
+    if (typeof stopReason === "string") {
+      const lower = stopReason.trim().toLowerCase();
+      const abnormal = ["terminated", "abort", "aborted", "cancel", "cancelled", "interrupted", "error"];
+      if (abnormal.some((token) => lower.includes(token))) {
+        // Check if context usage is critical before skipping.
+        const earlyUsage = ctx.getContextUsage();
+        const configuredCw = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : 128000;
+        const cw = effectiveContextWindow && effectiveContextWindow > 0 ? effectiveContextWindow : configuredCw;
+        const usageRatio = earlyUsage && earlyUsage.tokens !== null ? earlyUsage.tokens / cw : 0;
+        if (usageRatio < CRITICAL_CONTEXT_RATIO) {
+          trace("compaction_skipped", { reason: "abnormal_stop", stopReason, usageRatio });
+          return;
+        }
+        // Critical context usage on abnormal stop — force compaction below.
+        trace("compaction_forced_abnormal", {
+          reason: "critical_context_on_abnormal_stop",
+          stopReason,
+          usageRatio,
+          tokens: earlyUsage?.tokens,
+          contextWindow: cw,
+        });
+        notify(
+          ctx,
+          `Context critically high (${Math.round(usageRatio * 100)}%) after abnormal stop — forcing compaction.`,
+          "warning"
+        );
+      }
+    }
+
     const usage = ctx.getContextUsage();
     if (!usage || usage.tokens === null) return;
     const now = Date.now();
@@ -2035,19 +2852,33 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       customInstructions:
         "Prefer preserving current objective, unresolved blockers, file paths, and pending decisions. Remove repeated skill/tool boilerplate.",
       onComplete: () => {
+        const elapsed = Date.now() - compactionStartedAt;
         compactionInFlight = false;
-        trace("compaction_complete");
-        notify(ctx, "Hybrid compaction complete.");
+        stopCompactionPoll();
+        contextChunker.invalidate(); // Compaction resets message history — cached chunks are stale
+        trace("compaction_complete", { elapsedMs: elapsed });
+        notify(ctx, `Hybrid compaction complete (${Math.round(elapsed / 1000)}s).`);
       },
       onError: (error) => {
+        const elapsed = Date.now() - compactionStartedAt;
         compactionInFlight = false;
-        trace("compaction_error", { message: error.message });
-        notify(ctx, `Hybrid compaction failed: ${error.message}`, "error");
+        stopCompactionPoll();
+        trace("compaction_error", { message: error.message, elapsedMs: elapsed });
+        notify(ctx, `Hybrid compaction failed after ${Math.round(elapsed / 1000)}s: ${error.message}`, "error");
       },
     });
+
+    // Poll-based progress monitoring instead of a fixed timeout.
+    // The poll never prematurely resets compactionInFlight — only the real
+    // onComplete/onError callbacks above do that.  After COMPACTION_STALL_THRESHOLD_MS
+    // of total silence the poll clears the flag as a last-resort safety valve.
+    compactionStartedAt = Date.now();
+    startCompactionPoll(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    stopCompactionPoll();
+    compactionInFlight = false;
     effectiveContextWindow = null;
     setStatus(ctx);
   });

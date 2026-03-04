@@ -11,6 +11,12 @@
           "maxTokens": 32768
         },
         {
+          "id": "qwen3.5-9b",
+          "api": "openai-completions",
+          "contextWindow": 262144,
+          "maxTokens": 32768
+        },
+        {
           "id": "mlx-community/qwen3.5-27b",
           "api": "openai-completions",
           "contextWindow": 262144,

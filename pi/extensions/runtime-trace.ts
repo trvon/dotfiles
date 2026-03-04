@@ -83,6 +83,7 @@ function getTraceTargets(): TraceTarget[] {
   const watchdogTraceFile = process.env.PI_HEALTH_WATCHDOG_TRACE_FILE || `${homedir()}/.pi/agent/health-watchdog.jsonl`;
   const hybridTraceFile = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/hybrid-optimizer.jsonl`;
   const researchTraceFile = process.env.PI_RESEARCH_TRACE_FILE || `${homedir()}/.pi/agent/research-orchestrator.jsonl`;
+  const streamSaverTraceFile = process.env.PI_STREAM_SAVER_TRACE_FILE || `${homedir()}/.pi/agent/stream-saver.jsonl`;
 
   return [
     { name: "runtime", path: TRACE_FILE, enabled: TRACE_ENABLED },
@@ -90,6 +91,7 @@ function getTraceTargets(): TraceTarget[] {
     { name: "watchdog", path: watchdogTraceFile, enabled: true },
     { name: "hybrid", path: hybridTraceFile, enabled: true },
     { name: "research", path: researchTraceFile, enabled: true },
+    { name: "stream-saver", path: streamSaverTraceFile, enabled: true },
   ];
 }
 
@@ -201,7 +203,22 @@ async function fetchLoadedModelInfo(modelId: string): Promise<{ loadedContextLen
   }
 }
 
+const MESSAGE_UPDATE_TRACE_INTERVAL = parsePositiveInt(process.env.PI_RUNTIME_TRACE_UPDATE_INTERVAL, 50);
+
 export default function runtimeTraceExtension(pi: ExtensionAPI): void {
+  // State for tracking assistant streaming in-progress (observability gap fix).
+  let assistantStreamActive = false;
+  let assistantStreamUpdateCount = 0;
+  let assistantStreamBufferedChars = 0;
+  let assistantStreamStartedAt = 0;
+
+  function resetStreamState(): void {
+    assistantStreamActive = false;
+    assistantStreamUpdateCount = 0;
+    assistantStreamBufferedChars = 0;
+    assistantStreamStartedAt = 0;
+  }
+
   async function handleTraceStatus(ctx: ExtensionContext): Promise<void> {
     const targets = getTraceTargets();
     const status = buildTraceStatusSummary(targets);
@@ -339,7 +356,14 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (event) => {
-    writeTrace("agent_end", { messages: Array.isArray(event?.messages) ? event.messages.length : 0 });
+    writeTrace("agent_end", {
+      messages: Array.isArray(event?.messages) ? event.messages.length : 0,
+      assistantStreamActive,
+      assistantStreamUpdateCount,
+      assistantStreamBufferedChars,
+      assistantStreamElapsedMs: assistantStreamStartedAt > 0 ? Date.now() - assistantStreamStartedAt : -1,
+    });
+    resetStreamState();
   });
 
   pi.on("turn_start", async (event) => {
@@ -353,12 +377,58 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
     writeTrace("turn_end", { turnIndex: event?.turnIndex, stopReason, toolResults, totalTokens: usage });
   });
 
+  pi.on("message_start", async (event) => {
+    const role = event?.message?.role || "unknown";
+    if (role === "assistant") {
+      resetStreamState();
+      assistantStreamActive = true;
+      assistantStreamStartedAt = Date.now();
+    }
+    writeTrace("message_start", { role });
+  });
+
+  pi.on("message_update", async (event) => {
+    if (!assistantStreamActive) return;
+
+    assistantStreamUpdateCount += 1;
+
+    // Estimate buffered chars from the delta if available.
+    const delta = event?.assistantMessageEvent;
+    if (delta && typeof delta === "object") {
+      if (delta.type === "text_delta" && typeof delta.delta === "string") {
+        assistantStreamBufferedChars += delta.delta.length;
+      } else if (delta.type === "thinking_delta" && typeof delta.delta === "string") {
+        assistantStreamBufferedChars += delta.delta.length;
+      }
+    }
+
+    // Sampled trace logging to avoid bloat.
+    if (assistantStreamUpdateCount % MESSAGE_UPDATE_TRACE_INTERVAL === 0) {
+      writeTrace("message_update_sample", {
+        updateCount: assistantStreamUpdateCount,
+        bufferedChars: assistantStreamBufferedChars,
+        elapsedMs: assistantStreamStartedAt > 0 ? Date.now() - assistantStreamStartedAt : -1,
+      });
+    }
+  });
+
   pi.on("message_end", async (event, ctx) => {
     const message = event?.message;
     const role = message?.role || "unknown";
     const summary = summarizeMessage(message);
     const stopReason = message?.stopReason;
-    writeTrace("message_end", { role, stopReason, summary });
+    writeTrace("message_end", {
+      role,
+      stopReason,
+      summary,
+      assistantStreamWasActive: role === "assistant" ? assistantStreamActive : undefined,
+      assistantStreamUpdateCount: role === "assistant" ? assistantStreamUpdateCount : undefined,
+      assistantStreamBufferedChars: role === "assistant" ? assistantStreamBufferedChars : undefined,
+    });
+
+    if (role === "assistant") {
+      resetStreamState();
+    }
 
     const lower = summary.toLowerCase();
     if (lower.includes("error: terminated") || lower === "terminated" || lower.includes("operation aborted")) {
@@ -400,6 +470,7 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    resetStreamState();
     if (ctx?.hasUI) ctx.ui.setStatus("runtime-trace", undefined);
     writeTrace("session_shutdown");
   });

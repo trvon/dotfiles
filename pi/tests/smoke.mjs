@@ -121,7 +121,7 @@ function runOracleSmoke(traceDir) {
   runPi("/oracle-proof", hybridExtension, {
     PI_HYBRID_TRACE_FILE: traceFile,
     PI_HYBRID_YAMS_ENABLED: "0",
-    PI_ORACLE_MODEL: "mistralai/ministral-3-14b-reasoning",
+    PI_ORACLE_MODEL: "unsloth/qwen3.5-35b-a3b",
   });
 
   const events = readJsonl(traceFile);
@@ -134,7 +134,7 @@ function runOracleSmoke(traceDir) {
 
 function runWatchdogSmoke(traceDir) {
   const traceFile = path.join(traceDir, "watchdog-trace.jsonl");
-  const expectedVerifierModel = "mistralai/ministral-3-14b-reasoning";
+  const expectedVerifierModel = "qwen3.5-9b";
   runPi("/watchdog-proof", watchdogExtension, {
     PI_HEALTH_WATCHDOG_TRACE_FILE: traceFile,
     PI_HEALTH_WATCHDOG_VERIFY_BEFORE_RETRY: "1",

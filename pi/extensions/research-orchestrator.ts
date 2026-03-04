@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 
-import { complete } from "@mariozechner/pi-ai";
+import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 type ResearchState = {
@@ -34,6 +34,7 @@ const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
 const CRITIC_PROVIDER = process.env.PI_RESEARCH_CRITIC_PROVIDER || "lmstudio";
 const CRITIC_MODEL = process.env.PI_RESEARCH_CRITIC_MODEL || PRIMARY_MODEL;
 const CRITIC_MAX_TOKENS = parsePositiveInt(process.env.PI_RESEARCH_CRITIC_MAX_TOKENS, 900);
+const CRITIC_INACTIVITY_MS = parsePositiveInt(process.env.PI_RESEARCH_CRITIC_INACTIVITY_MS, 45000);
 
 const TRACE_FILE = process.env.PI_RESEARCH_TRACE_FILE || `${homedir()}/.pi/agent/research-orchestrator.jsonl`;
 
@@ -61,6 +62,55 @@ function normalizeLines(lines: string[]): string[] {
   return lines
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0);
+}
+
+/**
+ * Stream a completion and abort only if no new events arrive within `inactivityMs`.
+ * As long as LM Studio is actively generating tokens, the timer resets and the
+ * request is never killed.
+ */
+async function completeWithInactivityTimeout(
+  model: any,
+  context: any,
+  options: Record<string, any>,
+  inactivityMs: number
+): Promise<any> {
+  const controller = new AbortController();
+  const s = stream(model, context, { ...options, signal: controller.signal });
+  let result: any = null;
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetTimer = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      controller.abort();
+    }, inactivityMs);
+  };
+
+  resetTimer();
+
+  try {
+    for await (const event of s) {
+      resetTimer();
+      if (event.type === "done") {
+        result = event.message;
+      } else if (event.type === "error") {
+        result = event.error;
+      }
+    }
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      throw new Error("inactivity_timeout");
+    }
+    throw err;
+  } finally {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+  }
+
+  if (!result) {
+    throw new Error("stream ended without result");
+  }
+  return result;
 }
 
 function trace(type: string, payload: Record<string, unknown> = {}): void {
@@ -171,6 +221,7 @@ function buildGatherPrompt(topic: string): string {
 
 function buildCritiquePrompt(topic: string, gathered: string): string {
   return [
+    "/no_think",
     "You are a strict research critic for literature review notes.",
     "Return strict JSON with keys:",
     "verdict, confidence, strengths, gaps, followupQueries, nextActions",
@@ -295,9 +346,7 @@ function resolveCriticModel(ctx: ExtensionContext): any {
   const ids = [
     CRITIC_MODEL,
     PRIMARY_MODEL,
-    "mistralai/ministral-3-14b-reasoning",
     "unsloth/qwen3.5-27b",
-    "openai/gpt-oss-20b",
   ];
   const deduped = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   for (const id of deduped) {
@@ -319,7 +368,7 @@ async function critiqueGathering(ctx: ExtensionContext, topic: string, gathered:
   }
 
   try {
-    const response = await complete(
+    const response = await completeWithInactivityTimeout(
       model,
       {
         messages: [
@@ -330,7 +379,8 @@ async function critiqueGathering(ctx: ExtensionContext, topic: string, gathered:
           },
         ],
       },
-      { apiKey, maxTokens: CRITIC_MAX_TOKENS }
+      { apiKey, maxTokens: CRITIC_MAX_TOKENS },
+      CRITIC_INACTIVITY_MS
     );
 
     const text = response.content
@@ -346,7 +396,12 @@ async function critiqueGathering(ctx: ExtensionContext, topic: string, gathered:
 
     return { critique: parsed, modelId: model.id };
   } catch (error) {
-    trace("critic_exception", { message: error instanceof Error ? error.message : "unknown" });
+    const msg = error instanceof Error ? error.message : "unknown";
+    const isInactivity = msg === "inactivity_timeout";
+    trace(isInactivity ? "critic_inactivity_timeout" : "critic_exception", {
+      message: msg,
+      inactivityMs: CRITIC_INACTIVITY_MS,
+    });
     return { critique: fallbackCritique(gathered), modelId: model.id };
   }
 }

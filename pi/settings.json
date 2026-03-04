@@ -21,11 +21,8 @@
     "maxDelayMs": 20000
   },
   "enabledModels": [
-    "qwen3.5-27b-heretic",
-    "mlx-community/qwen3.5-27b",
-    "mistralai/ministral-3-14b-reasoning",
-    "openai/gpt-oss-20b",
-    "qwen3.5-122b-a10b",
+    "qwen3.5-9b",
+    "unsloth/qwen3.5-27b",
     "unsloth/qwen3.5-35b-a3b"
   ],
   "packages": [

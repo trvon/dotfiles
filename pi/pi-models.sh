@@ -6,7 +6,7 @@
 #   llama-cpp  — llama.cpp server (GGUF quantization, speculative decoding)
 #
 # MLX mode launches:
-#   PRIMARY  (port 8090): Qwen3.5-35B-A3B 4-bit via mlx_lm.server (~110 t/s gen)
+#   PRIMARY  (port 8090): Qwen3.5-35B-A3B 6-bit via mlx_lm.server (~86 t/s gen)
 #   SIDECAR  (port 8091): Qwen3.5-9B 4-bit via mlx_lm.server (~83 t/s gen)
 #
 # llama-cpp mode launches:
@@ -161,7 +161,7 @@ DRAFT_HF="unsloth/Qwen3.5-4B-GGUF:Q4_K_XL"
 SIDECAR_HF="unsloth/Qwen3.5-9B-GGUF:Q4_K_XL"
 
 # MLX model repos (HuggingFace, downloaded to ~/.cache/huggingface/)
-MLX_PRIMARY_MODEL="mlx-community/Qwen3.5-35B-A3B-4bit"
+MLX_PRIMARY_MODEL="mlx-community/Qwen3.5-35B-A3B-6bit"
 MLX_SIDECAR_MODEL="mlx-community/Qwen3.5-9B-4bit"
 
 # MLX server settings
@@ -417,7 +417,7 @@ cmd_start_mlx() {
   log "│       Pi Models Server Status (MLX)          │"
   log "├─────────────────────────────────────────────┤"
   if $primary_ok; then
-    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (~110 t/s)"
+    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (~86 t/s, 6-bit)"
   else
     log "│  PRIMARY  ✗  :$mlx_primary_port  (not ready)"
   fi

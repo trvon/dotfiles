@@ -84,10 +84,10 @@
       "models": [
         {
           "id": "qwen3.5-35b-a3b",
-          "name": "Qwen3.5 35B-A3B (MLX 4-bit)",
+          "name": "Qwen3.5 35B-A3B (MLX 6-bit)",
           "api": "openai-completions",
           "reasoning": true,
-          "contextWindow": 262144,
+          "contextWindow": 200000,
           "maxTokens": 32768,
           "compat": {
             "thinkingFormat": "qwen",
@@ -108,7 +108,7 @@
           "name": "Qwen3.5 9B (MLX 4-bit)",
           "api": "openai-completions",
           "reasoning": true,
-          "contextWindow": 65536,
+          "contextWindow": 200000,
           "maxTokens": 32768,
           "compat": {
             "thinkingFormat": "qwen",

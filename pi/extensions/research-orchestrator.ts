@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 
 import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { extractResponseText, getSidecarConfig, resolveActiveProvider, resolveSidecarProvider } from "./model-backend.ts";
 
 type ResearchState = {
   topic: string;
@@ -30,9 +31,13 @@ const DCS_TIMEOUT_MS = parsePositiveInt(process.env.PI_RESEARCH_DCS_TIMEOUT_MS, 
 const DCS_CONTEXT_PROFILE = process.env.PI_RESEARCH_DCS_CONTEXT_PROFILE || "large";
 const FRAMEWORK_CLI = process.env.PI_RESEARCH_FRAMEWORK_CLI || "research-agent";
 
-const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
-const CRITIC_PROVIDER = process.env.PI_RESEARCH_CRITIC_PROVIDER || "lmstudio";
-const CRITIC_MODEL = process.env.PI_RESEARCH_CRITIC_MODEL || PRIMARY_MODEL;
+// --- Auto-trigger settings ---
+const RESEARCH_AUTO = parseBoolean(process.env.PI_RESEARCH_AUTO, true);
+const RESEARCH_AUTO_COOLDOWN_MS = parsePositiveInt(process.env.PI_RESEARCH_AUTO_COOLDOWN_MS, 300_000); // 5 min
+
+const ENV_PRIMARY_MODEL = (process.env.PI_PRIMARY_MODEL || "").trim();
+const ENV_CRITIC_PROVIDER = (process.env.PI_RESEARCH_CRITIC_PROVIDER || "").trim();
+const CRITIC_MODEL = (process.env.PI_RESEARCH_CRITIC_MODEL || ENV_PRIMARY_MODEL).trim();
 const CRITIC_MAX_TOKENS = parsePositiveInt(process.env.PI_RESEARCH_CRITIC_MAX_TOKENS, 900);
 const CRITIC_INACTIVITY_MS = parsePositiveInt(process.env.PI_RESEARCH_CRITIC_INACTIVITY_MS, 45000);
 
@@ -53,6 +58,14 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) return fallback;
+  const lower = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(lower)) return true;
+  if (["0", "false", "no", "off"].includes(lower)) return false;
+  return fallback;
+}
+
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
@@ -62,6 +75,41 @@ function normalizeLines(lines: string[]): string[] {
   return lines
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0);
+}
+
+function stripWrapperBlocks(prompt: string): string {
+  return prompt
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, " ")
+    .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Detect whether a prompt has research intent.  Uses the same signal set as
+ * hybrid-optimizer's `detectProfile` so both agree on routing.
+ */
+function detectResearchIntent(prompt: string): boolean {
+  const p = stripWrapperBlocks(prompt).toLowerCase();
+  const signals = [
+    "literature review",
+    "related work",
+    "citation",
+    "dissertation",
+    "paper",
+    "survey",
+    "bibliography",
+    "p4",
+    "int telemetry",
+    "gnn",
+    "ids",
+  ];
+  return signals.some((s) => p.includes(s));
+}
+
+function resolvePrimaryModelId(ctx: ExtensionContext): string {
+  const preferred = normalizeLines([ctx.model?.id || "", ENV_PRIMARY_MODEL]);
+  return preferred[0] || "";
 }
 
 /**
@@ -221,7 +269,6 @@ function buildGatherPrompt(topic: string): string {
 
 function buildCritiquePrompt(topic: string, gathered: string): string {
   return [
-    "/no_think",
     "You are a strict research critic for literature review notes.",
     "Return strict JSON with keys:",
     "verdict, confidence, strengths, gaps, followupQueries, nextActions",
@@ -343,14 +390,21 @@ async function gatherWithDcs(
 }
 
 function resolveCriticModel(ctx: ExtensionContext): any {
+  const provider = ENV_CRITIC_PROVIDER || resolveActiveProvider(ctx);
+  const sc = getSidecarConfig(provider);
+  // Use PRIMARY provider for research critic (35B model) — not sidecar (9B).
+  // The sidecar 9B lacks the precision needed for faithful critique.
+  const lookupProvider = ENV_CRITIC_PROVIDER || provider;
+  const primaryModelId = resolvePrimaryModelId(ctx);
+  const criticModelId = sc.critic || primaryModelId;
   const ids = [
+    primaryModelId,
     CRITIC_MODEL,
-    PRIMARY_MODEL,
-    "unsloth/qwen3.5-27b",
+    criticModelId,
   ];
   const deduped = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   for (const id of deduped) {
-    const model = ctx.modelRegistry.find(CRITIC_PROVIDER, id);
+    const model = ctx.modelRegistry.find(lookupProvider, id);
     if (model) return model;
   }
   return null;
@@ -383,14 +437,13 @@ async function critiqueGathering(ctx: ExtensionContext, topic: string, gathered:
       CRITIC_INACTIVITY_MS
     );
 
-    const text = response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n")
-      .trim();
+    const { text, source: textSource } = extractResponseText(response);
+    if (textSource === "thinking") {
+      trace("critic_using_thinking_fallback", { modelId: model.id, chars: text.length });
+    }
     const parsed = parseCritiqueJson(text);
     if (!parsed) {
-      trace("critic_parse_fallback", { modelId: model.id });
+      trace("critic_parse_fallback", { modelId: model.id, textSource });
       return { critique: fallbackCritique(gathered), modelId: model.id };
     }
 
@@ -433,6 +486,51 @@ function formatCritiqueMarkdown(critique: CritiqueResult): string {
   ].join("\n");
 }
 
+function buildAutoResearchBrief(topic: string, gathered: string, critique: CritiqueResult, models: {
+  frameworkCli: string;
+  frameworkExecutor: string;
+  frameworkCritic: string;
+  criticModel: string;
+}): string {
+  const findings = normalizeLines(gathered.split("\n")).slice(0, 10).map((line) => `- ${line}`);
+  const gaps = critique.gaps.slice(0, 4).map((line) => `- ${line}`);
+  const queries = critique.followupQueries.slice(0, 4).map((line) => `- ${line}`);
+
+  return [
+    `[Research Brief — auto-injected for current turn]`,
+    `Topic: ${topic}`,
+    `Framework: cli=${models.frameworkCli} executor=${models.frameworkExecutor || "unknown"} frameworkCritic=${models.frameworkCritic || "unknown"} critic=${models.criticModel || "unknown"}`,
+    `Critic verdict: ${critique.verdict} (confidence=${critique.confidence.toFixed(2)})`,
+    "",
+    "Use this research brief in the current response. Treat it as retrieval-grounded context to cite, cross-check, and prioritize.",
+    "",
+    "Key Findings:",
+    findings.length > 0 ? findings.join("\n") : "- none",
+    "",
+    "Known Gaps:",
+    gaps.length > 0 ? gaps.join("\n") : "- none",
+    "",
+    "Suggested Retrieval Follow-ups:",
+    queries.length > 0 ? queries.join("\n") : "- none",
+  ].join("\n");
+}
+
+function buildAutoResearchSystemPatch(topic: string, critique: CritiqueResult): string {
+  const guidance = [
+    `[Research Context Patch]`,
+    `A research gather+critic pass was completed for this user turn on topic: ${topic}`,
+    `Critic verdict: ${critique.verdict}; confidence=${critique.confidence.toFixed(2)}.`,
+    "Use the injected research brief as current-turn context.",
+    "If you rely on claims from the brief, keep them grounded and preserve uncertainty where gaps remain.",
+  ];
+
+  if (critique.gaps.length > 0) {
+    guidance.push(`Open gaps to acknowledge: ${critique.gaps.slice(0, 3).join(" | ")}`);
+  }
+
+  return guidance.join("\n");
+}
+
 export default function researchOrchestratorExtension(pi: ExtensionAPI): void {
   let state: ResearchState = {
     topic: "",
@@ -445,6 +543,10 @@ export default function researchOrchestratorExtension(pi: ExtensionAPI): void {
     runs: 0,
     updatedAt: Date.now(),
   };
+
+  // --- Auto-trigger state ---
+  let lastAutoTriggerAt = 0;
+  let autoTriggerInFlight = false;
 
   function persist(): void {
     state.updatedAt = Date.now();
@@ -490,11 +592,14 @@ export default function researchOrchestratorExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     state = restoreState(ctx);
     setStatus(ctx);
-    const criticConfigured = Boolean(ctx.modelRegistry.find(CRITIC_PROVIDER, CRITIC_MODEL));
+    const primaryModelId = resolvePrimaryModelId(ctx);
+    const criticResolved = resolveCriticModel(ctx);
+    const criticConfigured = Boolean(criticResolved);
     trace("session_start", {
       dcsRoot: DCS_ROOT,
       runs: state.runs,
-      primaryModel: PRIMARY_MODEL,
+      primaryModel: primaryModelId || null,
+      criticResolvedModel: criticResolved?.id || null,
       criticConfigured,
       frameworkCli: FRAMEWORK_CLI,
     });
@@ -505,9 +610,118 @@ export default function researchOrchestratorExtension(pi: ExtensionAPI): void {
     if (!criticConfigured) {
       notify(
         ctx,
-        `Research critic model missing (${CRITIC_PROVIDER}/${CRITIC_MODEL}); fallback chain will be used.`,
+        `Research critic model unavailable (${ENV_CRITIC_PROVIDER || "auto"}); fallback chain will be used.`,
         "warning"
       );
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Auto-trigger: when the user's prompt has research intent, run the DCS
+  // pipeline (gather + critique) synchronously inside before_agent_start and
+  // inject a compact research brief into the SAME turn. This ensures research
+  // participates in the main context-curation scaffold instead of arriving as a
+  // later follow-up turn.
+  // ---------------------------------------------------------------------------
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!RESEARCH_AUTO) {
+      trace("research_auto_skipped", { reason: "disabled" });
+      return;
+    }
+    if (autoTriggerInFlight) {
+      trace("research_auto_skipped", { reason: "already_in_flight" });
+      return;
+    }
+
+    const prompt = (event.prompt || "").trim();
+    if (!prompt) return;
+
+    if (!detectResearchIntent(prompt)) {
+      trace("research_auto_skipped", { reason: "no_research_intent", promptChars: prompt.length });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastAutoTriggerAt < RESEARCH_AUTO_COOLDOWN_MS) {
+      trace("research_auto_skipped", {
+        reason: "cooldown",
+        cooldownMs: RESEARCH_AUTO_COOLDOWN_MS,
+        elapsedMs: now - lastAutoTriggerAt,
+      });
+      return;
+    }
+
+    // Use the user prompt as the DCS task.  The decomposer will break it
+    // into YAMS queries; the critic loop quality-gates the output.
+    const topic = prompt.length > 300 ? prompt.slice(0, 300).trimEnd() : prompt;
+
+    lastAutoTriggerAt = now;
+    autoTriggerInFlight = true;
+    trace("research_auto_triggered", { topic: truncate(topic, 120), promptChars: prompt.length });
+    notify(ctx, `Research pipeline blocking current turn: ${truncate(topic, 80)}`);
+
+    try {
+      const gathered = await gatherWithDcs(pi, topic);
+      if (!gathered.ok) {
+        trace("research_auto_gather_failed", { topic, out: truncate(gathered.raw, 400) });
+        notify(ctx, `Research auto-gather failed: ${truncate(gathered.raw, 200)}`, "warning");
+        return;
+      }
+
+      const { critique, modelId } = await critiqueGathering(ctx, topic, gathered.output);
+      const critiqueMd = formatCritiqueMarkdown(critique);
+      const runModels = parseFrameworkRunModels(gathered.raw);
+
+      state.topic = topic;
+      state.gatherOutput = gathered.output;
+      state.critiqueOutput = critiqueMd;
+      state.followupQueries = critique.followupQueries;
+      state.gatherModel = runModels.executor || "framework-executor-unknown";
+      state.gatherCriticModel = runModels.critic || "framework-critic-unknown";
+      state.criticModel = modelId;
+      state.runs += 1;
+      persist();
+      setStatus(ctx);
+
+      const researchBrief = buildAutoResearchBrief(topic, gathered.output, critique, {
+        frameworkCli: gathered.cli,
+        frameworkExecutor: state.gatherModel,
+        frameworkCritic: state.gatherCriticModel,
+        criticModel: modelId,
+      });
+      const systemPrompt = [
+        event.systemPrompt,
+        buildAutoResearchSystemPatch(topic, critique),
+      ].join("\n\n");
+
+      trace("research_auto_injected", {
+        topic,
+        frameworkCli: gathered.cli,
+        frameworkExecutor: state.gatherModel,
+        frameworkCritic: state.gatherCriticModel,
+        criticModel: modelId,
+        gatherChars: gathered.output.length,
+        injectedChars: researchBrief.length,
+        critiqueConfidence: critique.confidence,
+        queries: critique.followupQueries.length,
+      });
+      notify(ctx, "Research brief injected into current turn.");
+
+      return {
+        systemPrompt,
+        message: {
+          customType: "research-auto-brief",
+          content: researchBrief,
+          display: false,
+        },
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown";
+      trace("research_auto_error", { error: msg });
+      notify(ctx, `Research auto-trigger error: ${msg}`, "warning");
+      return;
+    } finally {
+      autoTriggerInFlight = false;
     }
   });
 

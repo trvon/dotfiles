@@ -7,6 +7,8 @@ import path from "node:path";
 import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { contextChunker } from "./semantic-compressor.ts";
+import { extractResponseText, fetchLoadedContextWindow, getSidecarConfig, resolveActiveProvider, resolveSidecarProvider } from "./model-backend.ts";
+import type { SidecarConfig } from "./model-backend.ts";
 
 type Mode = "fast" | "deep";
 type OptimizationProfile = "general" | "research";
@@ -53,14 +55,14 @@ type ContextSteering = {
   pressure: "low" | "medium" | "high" | "critical";
 };
 
-const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
-const DEFAULT_OPTIMIZER_PROVIDER = process.env.PI_OPTIMIZER_PROVIDER || "lmstudio";
-const DEFAULT_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_MODEL || "qwen3.5-9b";
-const FALLBACK_OPTIMIZER_MODEL = "unsloth/qwen3.5-27b";
-const RESEARCH_OPTIMIZER_MODEL = process.env.PI_OPTIMIZER_RESEARCH_MODEL || "qwen3.5-9b";
+const ENV_PRIMARY_MODEL = (process.env.PI_PRIMARY_MODEL || "").trim();
+const ENV_OPTIMIZER_PROVIDER = (process.env.PI_OPTIMIZER_PROVIDER || "").trim();
+const ENV_OPTIMIZER_MODEL = (process.env.PI_OPTIMIZER_MODEL || "").trim();
+const ENV_FALLBACK_OPTIMIZER_MODEL = (process.env.PI_OPTIMIZER_FALLBACK_MODEL || "").trim();
+const ENV_RESEARCH_OPTIMIZER_MODEL = (process.env.PI_OPTIMIZER_RESEARCH_MODEL || "").trim();
 const ORACLE_ENABLED = parseBoolean(process.env.PI_ORACLE_ENABLED, true);
-const ORACLE_PROVIDER = process.env.PI_ORACLE_PROVIDER || "lmstudio";
-const ORACLE_MODEL = process.env.PI_ORACLE_MODEL || PRIMARY_MODEL;
+const ENV_ORACLE_PROVIDER = (process.env.PI_ORACLE_PROVIDER || "").trim();
+const ORACLE_MODEL = (process.env.PI_ORACLE_MODEL || ENV_PRIMARY_MODEL).trim();
 const ORACLE_MAX_TOKENS = parsePositiveInt(process.env.PI_ORACLE_MAX_TOKENS, 160);
 const ORACLE_INACTIVITY_MS = parsePositiveInt(process.env.PI_ORACLE_INACTIVITY_MS, 45000);
 
@@ -80,11 +82,9 @@ const SHOW_PROMPT_PAIR = parseBoolean(process.env.PI_HYBRID_SHOW_PROMPT_PAIR, tr
 const PROMPT_PREVIEW_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_PREVIEW_CHARS, 700);
 const PROMPT_STATE_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_STATE_CHARS, 2400);
 const TRACE_FILE = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/hybrid-optimizer.jsonl`;
-const LMSTUDIO_MODELS_URL = process.env.PI_LMSTUDIO_MODELS_URL || "http://localhost:1234/api/v0/models";
-const LMSTUDIO_MODELS_TIMEOUT_MS = parsePositiveInt(process.env.PI_LMSTUDIO_MODELS_TIMEOUT_MS, 2500);
 
 const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.49);
-const COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 128000);
+let COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 128000);
 const COMPACTION_COOLDOWN_MS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_COOLDOWN_MS, 180000);
 const COMPACTION_SAFETY_HEADROOM_TOKENS = parsePositiveInt(
   process.env.PI_HYBRID_COMPACTION_SAFETY_HEADROOM,
@@ -113,8 +113,8 @@ const RLM_MAX_HINT_SNIPPET_CHARS = 400;
 
 // RLM extractor mode: "heuristic" (default) or "model" (uses sidecar LLM)
 const RLM_EXTRACTOR_MODE = (process.env.PI_RLM_EXTRACTOR_MODE || "heuristic") as "heuristic" | "model";
-const RLM_EXTRACTOR_PROVIDER = process.env.PI_RLM_EXTRACTOR_PROVIDER || "lmstudio";
-const RLM_EXTRACTOR_MODEL = process.env.PI_RLM_EXTRACTOR_MODEL || "qwen3.5-9b";
+const ENV_RLM_EXTRACTOR_PROVIDER = (process.env.PI_RLM_EXTRACTOR_PROVIDER || "").trim();
+const ENV_RLM_EXTRACTOR_MODEL = (process.env.PI_RLM_EXTRACTOR_MODEL || "").trim();
 const RLM_EXTRACTOR_MAX_TOKENS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_MAX_TOKENS, 1200);
 const RLM_EXTRACTOR_INACTIVITY_MS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_INACTIVITY_MS, 20000);
 const RLM_EXTRACTOR_MAX_INPUT_CHARS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_MAX_INPUT_CHARS, 12000);
@@ -137,13 +137,13 @@ const TOOL_OUTPUT_TAIL_CHARS = parsePositiveInt(process.env.PI_TOOL_OUTPUT_TAIL_
 // authority for clearing `compactionInFlight`.
 const COMPACTION_POLL_INTERVAL_MS = parsePositiveInt(process.env.PI_COMPACTION_POLL_INTERVAL_MS, 10_000);
 const COMPACTION_STALL_THRESHOLD_MS = parsePositiveInt(process.env.PI_COMPACTION_STALL_THRESHOLD_MS, 300_000); // 5 min hard stall
-const CONTEXT_BUDGET_WARN_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_WARN_TOKENS, 200000);
-const CONTEXT_BUDGET_STEER_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_STEER_TOKENS, 80000);
+let CONTEXT_BUDGET_WARN_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_WARN_TOKENS, 200000);
+let CONTEXT_BUDGET_STEER_TOKENS = parsePositiveInt(process.env.PI_CONTEXT_BUDGET_STEER_TOKENS, 80000);
 
 // --- Token-aware context management tiers ---
-const CTX_TIER1_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER1_TOKENS, 64000);
-const CTX_TIER2_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER2_TOKENS, 128000);
-const CTX_TIER3_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER3_TOKENS, 192000);
+let CTX_TIER1_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER1_TOKENS, 64000);
+let CTX_TIER2_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER2_TOKENS, 128000);
+let CTX_TIER3_TOKENS = parsePositiveInt(process.env.PI_CTX_TIER3_TOKENS, 192000);
 // Tier 1 tighter caps
 const TIER1_TOOL_OUTPUT_MAX_CHARS = parsePositiveInt(process.env.PI_TIER1_TOOL_OUTPUT_MAX_CHARS, 4000);
 const TIER1_CAP_OLD_ASSISTANT_TEXT_CHARS = parsePositiveInt(process.env.PI_TIER1_CAP_OLD_ASSISTANT_TEXT, 600);
@@ -185,6 +185,44 @@ function parseRatio(value: string | undefined, fallback: number): number {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) return fallback;
   return parsed;
+}
+
+// --- Adaptive threshold scaling ---
+// Default thresholds are calibrated for a 262k context window.
+// This function rescales any thresholds not explicitly set via env vars
+// to maintain the same proportional positions for smaller/larger windows.
+const REFERENCE_CONTEXT_WINDOW = 262144;
+function scaleContextThresholds(contextWindow: number): void {
+  if (!contextWindow || contextWindow <= 0 || contextWindow === REFERENCE_CONTEXT_WINDOW) return;
+  const scale = contextWindow / REFERENCE_CONTEXT_WINDOW;
+  if (!process.env.PI_HYBRID_COMPACTION_MIN_TOKENS) {
+    COMPACTION_MIN_TOKENS = Math.max(4096, Math.floor(128000 * scale));
+  }
+  if (!process.env.PI_CONTEXT_BUDGET_WARN_TOKENS) {
+    CONTEXT_BUDGET_WARN_TOKENS = Math.max(4096, Math.floor(200000 * scale));
+  }
+  if (!process.env.PI_CONTEXT_BUDGET_STEER_TOKENS) {
+    CONTEXT_BUDGET_STEER_TOKENS = Math.max(2048, Math.floor(80000 * scale));
+  }
+  if (!process.env.PI_CTX_TIER1_TOKENS) {
+    CTX_TIER1_TOKENS = Math.max(2048, Math.floor(64000 * scale));
+  }
+  if (!process.env.PI_CTX_TIER2_TOKENS) {
+    CTX_TIER2_TOKENS = Math.max(4096, Math.floor(128000 * scale));
+  }
+  if (!process.env.PI_CTX_TIER3_TOKENS) {
+    CTX_TIER3_TOKENS = Math.max(8192, Math.floor(192000 * scale));
+  }
+  trace("context_thresholds_scaled", {
+    contextWindow,
+    scale: Number(scale.toFixed(4)),
+    compactionMinTokens: COMPACTION_MIN_TOKENS,
+    budgetWarn: CONTEXT_BUDGET_WARN_TOKENS,
+    budgetSteer: CONTEXT_BUDGET_STEER_TOKENS,
+    tier1: CTX_TIER1_TOKENS,
+    tier2: CTX_TIER2_TOKENS,
+    tier3: CTX_TIER3_TOKENS,
+  });
 }
 
 function classifyContextPressure(ratio: number): ContextSteering["pressure"] {
@@ -256,6 +294,94 @@ function truncate(text: string, limit: number): string {
   return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
 }
 
+// ---------------------------------------------------------------------------
+// Deferred temp file cleanup — prevents race with async YAMS ingest
+// ---------------------------------------------------------------------------
+
+/** How long to keep temp files before sweeping (15 min). */
+const DEFERRED_TTL_MS = 15 * 60 * 1000;
+/** Maximum number of pending temp files before forced eviction. */
+const DEFERRED_MAX_FILES = 200;
+
+type DeferredFile = { path: string; createdAt: number };
+
+/**
+ * Manages deferred cleanup of temp files written for YAMS ingest.
+ *
+ * `yams add` is async — it enqueues a document and returns immediately.
+ * The daemon's IngestService processes the queue later and reads the file
+ * from disk. If we `unlinkSync` the temp file in a `finally` block right
+ * after `exec("yams", ["add", ...])` returns, the daemon may find the file
+ * already deleted.
+ *
+ * Instead, temp files are registered here and cleaned up:
+ * - Periodically (files older than DEFERRED_TTL_MS) via `sweep()`
+ * - On session_shutdown via `flushAll()`
+ * - When the pending count exceeds DEFERRED_MAX_FILES (oldest evicted)
+ */
+class TempFileManager {
+  private _pending: DeferredFile[] = [];
+
+  /** Register a temp file for deferred cleanup. */
+  register(filePath: string, now?: number): void {
+    this._pending.push({ path: filePath, createdAt: now ?? Date.now() });
+    // If we exceed the bound, evict oldest files immediately
+    while (this._pending.length > DEFERRED_MAX_FILES) {
+      const oldest = this._pending.shift()!;
+      try {
+        fs.unlinkSync(oldest.path);
+      } catch {
+        // Already gone or inaccessible — fine.
+      }
+    }
+  }
+
+  /** Sweep files older than TTL. Returns count of files removed. */
+  sweep(now?: number): number {
+    const cutoff = (now ?? Date.now()) - DEFERRED_TTL_MS;
+    let removed = 0;
+    const remaining: DeferredFile[] = [];
+
+    for (const entry of this._pending) {
+      if (entry.createdAt < cutoff) {
+        try {
+          fs.unlinkSync(entry.path);
+        } catch {
+          // Already gone — fine.
+        }
+        removed++;
+      } else {
+        remaining.push(entry);
+      }
+    }
+
+    this._pending = remaining;
+    return removed;
+  }
+
+  /** Flush all pending files (called on session_shutdown). */
+  flushAll(): number {
+    let removed = 0;
+    for (const entry of this._pending) {
+      try {
+        fs.unlinkSync(entry.path);
+        removed++;
+      } catch {
+        // Already gone — fine.
+      }
+    }
+    this._pending = [];
+    return removed;
+  }
+
+  get pendingCount(): number {
+    return this._pending.length;
+  }
+}
+
+/** Module-level temp file manager for the hybrid optimizer's RLM chunks. */
+const rlmTempFileManager = new TempFileManager();
+
 function truncateToolOutput(text: string): { text: string; truncated: boolean; originalLength: number } {
   if (text.length <= TOOL_OUTPUT_MAX_CHARS) return { text, truncated: false, originalLength: text.length };
   const head = text.slice(0, TOOL_OUTPUT_HEAD_CHARS);
@@ -264,31 +390,15 @@ function truncateToolOutput(text: string): { text: string; truncated: boolean; o
   return { text: head + marker + tail, truncated: true, originalLength: text.length };
 }
 
-async function fetchLoadedContextWindow(modelId: string): Promise<number | null> {
-  if (!modelId) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LMSTUDIO_MODELS_TIMEOUT_MS);
-  try {
-    const response = await fetch(LMSTUDIO_MODELS_URL, { signal: controller.signal });
-    if (!response.ok) return null;
-    const data = (await response.json()) as any;
-    const rows = Array.isArray(data?.data) ? data.data : [];
-    const row = rows.find((item: any) => item && typeof item.id === "string" && item.id === modelId);
-    if (!row) return null;
-    const loaded = Number(row.loaded_context_length);
-    if (!Number.isFinite(loaded) || loaded <= 0) return null;
-    return Math.floor(loaded);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function normalizeLines(lines: string[]): string[] {
   return lines
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0);
+}
+
+function resolvePrimaryModelId(ctx: ExtensionContext): string {
+  const preferred = normalizeLines([ctx.model?.id || "", ENV_PRIMARY_MODEL]);
+  return preferred[0] || "";
 }
 
 function normalizeHintList(input: Array<{ path: string; snippet: string; score: number }>): Array<{
@@ -619,14 +729,19 @@ function shouldRunOracle(prompt: string, result: OptimizerResult, profile: Optim
 }
 
 function resolveOracleModel(ctx: ExtensionContext): any {
+  const provider = ENV_ORACLE_PROVIDER || resolveActiveProvider(ctx);
+  const sc = getSidecarConfig(provider);
+  const lookupProvider = ENV_ORACLE_PROVIDER || resolveSidecarProvider(provider);
+  const primaryModelId = resolvePrimaryModelId(ctx);
+  const oracleModelId = sc.oracle || primaryModelId;
   const candidates = normalizeLines([
     ORACLE_MODEL,
-    PRIMARY_MODEL,
-    "unsloth/qwen3.5-27b",
+    oracleModelId,
+    primaryModelId,
   ]);
 
   for (const id of candidates) {
-    const model = ctx.modelRegistry.find(ORACLE_PROVIDER, id);
+    const model = ctx.modelRegistry.find(lookupProvider, id);
     if (model) return model;
   }
   return null;
@@ -634,7 +749,6 @@ function resolveOracleModel(ctx: ExtensionContext): any {
 
 function buildOraclePrompt(prompt: string, result: OptimizerResult, profile: OptimizationProfile): string {
   return [
-    "/no_think",
     "You are an oracle validator for a coding agent execution brief.",
     "Return STRICT JSON only with keys: verdict, confidence, issues, requiredChecks.",
     "Rules:",
@@ -661,7 +775,7 @@ async function runOracleReview(
 ): Promise<{ review: OracleReview; modelId: string } | null> {
   const model = resolveOracleModel(ctx);
   if (!model) {
-    trace("oracle_unavailable", { reason: "model_not_found", provider: ORACLE_PROVIDER });
+    trace("oracle_unavailable", { reason: "model_not_found", provider: ENV_ORACLE_PROVIDER || resolveActiveProvider(ctx) });
     return null;
   }
 
@@ -698,15 +812,14 @@ async function runOracleReview(
       ORACLE_INACTIVITY_MS
     );
 
-    const text = response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n")
-      .trim();
+    const { text, source: textSource } = extractResponseText(response);
+    if (textSource === "thinking") {
+      trace("oracle_using_thinking_fallback", { modelId: model.id, chars: text.length });
+    }
 
     const parsed = parseOracleJson(text);
     if (!parsed) {
-      trace("oracle_parse_failed", { modelId: model.id, responseChars: text.length });
+      trace("oracle_parse_failed", { modelId: model.id, responseChars: text.length, textSource });
       return null;
     }
 
@@ -765,7 +878,7 @@ function restoreState(ctx: ExtensionContext): OptimizerState {
       lastProfile: data?.lastProfile === "research" ? "research" : "general",
       lastOptimizationSource: data?.lastOptimizationSource === "model" ? "model" : "fallback",
       updatedAt: typeof data?.updatedAt === "number" ? data.updatedAt : Date.now(),
-      optimizerModel: typeof data?.optimizerModel === "string" ? data.optimizerModel : DEFAULT_OPTIMIZER_MODEL,
+      optimizerModel: typeof data?.optimizerModel === "string" ? data.optimizerModel : ENV_OPTIMIZER_MODEL || "auto",
       optimizations: typeof data?.optimizations === "number" ? data.optimizations : 0,
       optimizerAttempts: typeof data?.optimizerAttempts === "number" ? data.optimizerAttempts : 0,
       optimizerSuccesses: typeof data?.optimizerSuccesses === "number" ? data.optimizerSuccesses : 0,
@@ -784,7 +897,7 @@ function restoreState(ctx: ExtensionContext): OptimizerState {
     lastProfile: "general",
     lastOptimizationSource: "fallback",
     updatedAt: Date.now(),
-    optimizerModel: DEFAULT_OPTIMIZER_MODEL,
+    optimizerModel: ENV_OPTIMIZER_MODEL || "auto",
     optimizations: 0,
     optimizerAttempts: 0,
     optimizerSuccesses: 0,
@@ -948,20 +1061,25 @@ function buildSystemPromptPatch(
 }
 
 function resolveOptimizerModels(ctx: ExtensionContext, profile: OptimizationProfile): any[] {
+  // Optimizer models are always the dedicated sidecar models, never the primary.
+  // This prevents sending Qwen-formatted prompts to non-Qwen primary models
+  // and avoids wasting time on models that can't produce structured optimizer JSON.
+  const provider = ENV_OPTIMIZER_PROVIDER || resolveActiveProvider(ctx);
+  const sc = getSidecarConfig(provider);
+  const lookupProvider = ENV_OPTIMIZER_PROVIDER || resolveSidecarProvider(provider);
+  const optimizerModel = ENV_OPTIMIZER_MODEL || sc.optimizer;
+  const fallbackModel = ENV_FALLBACK_OPTIMIZER_MODEL || sc.optimizerFallback;
+  const researchModel = ENV_RESEARCH_OPTIMIZER_MODEL || sc.researchOptimizer;
+
   const raw =
     profile === "research"
-      ? normalizeLines([
-          RESEARCH_OPTIMIZER_MODEL,
-          DEFAULT_OPTIMIZER_MODEL,
-          PRIMARY_MODEL,
-          FALLBACK_OPTIMIZER_MODEL,
-        ])
-      : normalizeLines([DEFAULT_OPTIMIZER_MODEL, PRIMARY_MODEL, FALLBACK_OPTIMIZER_MODEL]);
-  // Deduplicate: when env vars aren't set, DEFAULT_OPTIMIZER_MODEL may equal PRIMARY_MODEL
+      ? normalizeLines([researchModel, optimizerModel, fallbackModel])
+      : normalizeLines([optimizerModel, fallbackModel]);
+  // Deduplicate: preferred model candidates can collapse to the same model id.
   const preferred = [...new Set(raw)];
   const models: any[] = [];
   for (const id of preferred) {
-    const model = ctx.modelRegistry.find(DEFAULT_OPTIMIZER_PROVIDER, id);
+    const model = ctx.modelRegistry.find(lookupProvider, id);
     if (model) models.push(model);
   }
   return models;
@@ -976,15 +1094,15 @@ async function optimizeWithModel(
   contextSteering?: ContextSteering | null
 ): Promise<{ result: OptimizerResult; modelId: string } | null> {
   const models = resolveOptimizerModels(ctx, profile);
+  const activeProvider = ENV_OPTIMIZER_PROVIDER || resolveActiveProvider(ctx);
   if (models.length === 0) {
-    trace("optimizer_model_unavailable", { provider: DEFAULT_OPTIMIZER_PROVIDER });
+    trace("optimizer_model_unavailable", { provider: activeProvider });
     return null;
   }
 
   const carryContext = state.carry.length > 0 ? state.carry.map((line) => `- ${line}`).join("\n") : "- none";
 
   const userMessage = [
-    "/no_think",
     "You are a prompt optimizer for a coding agent.",
     `Optimization profile: ${profile}`,
     "Return STRICT JSON only with keys:",
@@ -1026,7 +1144,7 @@ async function optimizeWithModel(
     const apiKey = await ctx.modelRegistry.getApiKey(model);
     if (!apiKey) {
       trace("optimizer_model_unavailable", {
-        provider: DEFAULT_OPTIMIZER_PROVIDER,
+        provider: activeProvider,
         modelId: model.id,
         reason: "no_api_key",
       });
@@ -1034,7 +1152,7 @@ async function optimizeWithModel(
     }
 
     trace("optimizer_model_call", {
-      provider: DEFAULT_OPTIMIZER_PROVIDER,
+      provider: activeProvider,
       modelId: model.id,
       promptChars: prompt.length,
       contextPressure: contextSteering?.pressure || "unknown",
@@ -1068,11 +1186,14 @@ async function optimizeWithModel(
         OPTIMIZER_INACTIVITY_MS
       );
 
-      const text = response.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("\n")
-        .trim();
+      const { text, source: textSource } = extractResponseText(response);
+      if (textSource === "thinking") {
+        trace("optimizer_model_using_thinking_fallback", {
+          provider: activeProvider,
+          modelId: model.id,
+          chars: text.length,
+        });
+      }
 
       const parsed = parseOptimizerJson(text, prompt);
       if (!parsed) {
@@ -1080,7 +1201,7 @@ async function optimizeWithModel(
           const loose = parseOptimizerLoose(text, prompt);
           if (loose) {
             trace("optimizer_model_loose_parsed", {
-              provider: DEFAULT_OPTIMIZER_PROVIDER,
+              provider: activeProvider,
               modelId: model.id,
               mode: loose.mode,
               confidence: loose.confidence,
@@ -1088,13 +1209,13 @@ async function optimizeWithModel(
             return { result: loose, modelId: model.id };
           }
           trace("optimizer_model_loose_rejected", {
-            provider: DEFAULT_OPTIMIZER_PROVIDER,
+            provider: activeProvider,
             modelId: model.id,
             responseChars: text.length,
           });
         }
         trace("optimizer_model_parse_failed", {
-          provider: DEFAULT_OPTIMIZER_PROVIDER,
+          provider: activeProvider,
           modelId: model.id,
           responseChars: text.length,
         });
@@ -1102,7 +1223,7 @@ async function optimizeWithModel(
       }
 
       trace("optimizer_model_parsed", {
-        provider: DEFAULT_OPTIMIZER_PROVIDER,
+        provider: activeProvider,
         modelId: model.id,
         mode: parsed.mode,
         confidence: parsed.confidence,
@@ -1265,10 +1386,14 @@ function extractMemoryChunks(messages: any[], state: OptimizerState): RlmChunk[]
 function resolveRlmExtractorModel(ctx: ExtensionContext): any {
   // RLM extractor only tries the configured sidecar model.
   // On failure the caller falls back to heuristic extraction -- no other LLMs.
-  const candidates = normalizeLines([RLM_EXTRACTOR_MODEL]);
+  const provider = ENV_RLM_EXTRACTOR_PROVIDER || resolveActiveProvider(ctx);
+  const sc = getSidecarConfig(provider);
+  const lookupProvider = ENV_RLM_EXTRACTOR_PROVIDER || resolveSidecarProvider(provider);
+  const extractorModel = ENV_RLM_EXTRACTOR_MODEL || sc.rlmExtractor;
+  const candidates = normalizeLines([extractorModel]);
 
   for (const id of candidates) {
-    const model = ctx.modelRegistry.find(RLM_EXTRACTOR_PROVIDER, id);
+    const model = ctx.modelRegistry.find(lookupProvider, id);
     if (model) return model;
   }
   return null;
@@ -1296,7 +1421,6 @@ function buildRlmExtractorPrompt(messages: any[], state: OptimizerState): string
   }
 
   return [
-    "/no_think",
     "You are a memory extraction system for a coding assistant. Your job is to extract the most important information from conversation messages that are about to be evicted from context.",
     "",
     "Return STRICT JSON only: an array of objects with keys: type, content",
@@ -1327,7 +1451,7 @@ async function extractMemoryChunksWithModel(
 ): Promise<RlmChunk[] | null> {
   const model = resolveRlmExtractorModel(ctx);
   if (!model) {
-    trace("rlm_extractor_model_unavailable", { reason: "model_not_found", provider: RLM_EXTRACTOR_PROVIDER });
+    trace("rlm_extractor_model_unavailable", { reason: "model_not_found", provider: ENV_RLM_EXTRACTOR_PROVIDER || resolveActiveProvider(ctx) });
     return null; // Signal to fall back to heuristic
   }
 
@@ -1361,11 +1485,10 @@ async function extractMemoryChunksWithModel(
       RLM_EXTRACTOR_INACTIVITY_MS
     );
 
-    const text = response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n")
-      .trim();
+    const { text, source: textSource } = extractResponseText(response);
+    if (textSource === "thinking") {
+      trace("rlm_extractor_using_thinking_fallback", { modelId: model.id, chars: text.length });
+    }
 
     // Strip markdown code fences if present
     const jsonText = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```$/m, "").trim();
@@ -1374,7 +1497,7 @@ async function extractMemoryChunksWithModel(
     try {
       parsed = JSON.parse(jsonText);
     } catch {
-      trace("rlm_extractor_model_parse_failed", { modelId: model.id, responseChars: text.length });
+      trace("rlm_extractor_model_parse_failed", { modelId: model.id, responseChars: text.length, textSource });
       return null;
     }
 
@@ -1450,15 +1573,13 @@ async function storeRlmChunk(
       ],
       { timeout: RLM_STORE_TIMEOUT_MS }
     );
+    // Defer cleanup — YAMS add is async, daemon reads the file later.
+    rlmTempFileManager.register(tmpFile);
     return result.code === 0;
   } catch {
+    // Exec failed — still defer cleanup in case daemon is mid-read.
+    rlmTempFileManager.register(tmpFile);
     return false;
-  } finally {
-    try {
-      fs.unlinkSync(tmpFile);
-    } catch {
-      // Ignore cleanup errors.
-    }
   }
 }
 
@@ -1723,7 +1844,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     lastProfile: "general",
     lastOptimizationSource: "fallback",
     updatedAt: Date.now(),
-    optimizerModel: DEFAULT_OPTIMIZER_MODEL,
+    optimizerModel: ENV_OPTIMIZER_MODEL || "auto",
     optimizations: 0,
     optimizerAttempts: 0,
     optimizerSuccesses: 0,
@@ -1812,16 +1933,31 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
   }
 
   function auditModelAvailability(ctx: ExtensionContext): string[] {
+    const provider = ENV_OPTIMIZER_PROVIDER || resolveActiveProvider(ctx);
+    const oracleProvider = ENV_ORACLE_PROVIDER || provider;
+    const rlmProvider = ENV_RLM_EXTRACTOR_PROVIDER || provider;
+    const sc = getSidecarConfig(provider);
+    const oracleSc = getSidecarConfig(oracleProvider);
+    const rlmSc = getSidecarConfig(rlmProvider);
+    // For registry lookups, use the sidecar provider (handles llama-cpp → llama-cpp-sidecar redirect)
+    const lookupProvider = ENV_OPTIMIZER_PROVIDER || resolveSidecarProvider(provider);
+    const oracleLookup = ENV_ORACLE_PROVIDER || resolveSidecarProvider(oracleProvider);
+    const rlmLookup = ENV_RLM_EXTRACTOR_PROVIDER || resolveSidecarProvider(rlmProvider);
+    const primaryModelId = resolvePrimaryModelId(ctx);
     const required = [
-      { role: "optimizer", provider: DEFAULT_OPTIMIZER_PROVIDER, id: DEFAULT_OPTIMIZER_MODEL },
-      { role: "research-optimizer", provider: DEFAULT_OPTIMIZER_PROVIDER, id: RESEARCH_OPTIMIZER_MODEL },
-      { role: "oracle", provider: ORACLE_PROVIDER, id: ORACLE_MODEL },
+      { role: "optimizer", provider: lookupProvider, id: ENV_OPTIMIZER_MODEL || sc.optimizer },
+      { role: "research-optimizer", provider: lookupProvider, id: ENV_RESEARCH_OPTIMIZER_MODEL || sc.researchOptimizer },
+      { role: "oracle", provider: oracleLookup, id: ORACLE_MODEL || oracleSc.oracle || primaryModelId },
     ];
     if (RLM_ENABLED && RLM_EXTRACTOR_MODE === "model") {
-      required.push({ role: "rlm-extractor", provider: RLM_EXTRACTOR_PROVIDER, id: RLM_EXTRACTOR_MODEL });
+      required.push({ role: "rlm-extractor", provider: rlmLookup, id: ENV_RLM_EXTRACTOR_MODEL || rlmSc.rlmExtractor });
     }
     const missing: string[] = [];
     for (const check of required) {
+      if (!check.id) {
+        missing.push(`${check.role}=${check.provider}/<unresolved>`);
+        continue;
+      }
       if (!ctx.modelRegistry.find(check.provider, check.id)) {
         missing.push(`${check.role}=${check.provider}/${check.id}`);
       }
@@ -1844,6 +1980,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     rlmDcsEnriched = false;
     dcsEnrichmentText = null;
     const configuredContextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
+    const primaryModelId = resolvePrimaryModelId(ctx);
     const contextWindowOverride = parsePositiveInt(process.env.PI_HYBRID_CONTEXT_WINDOW_OVERRIDE, 0);
     effectiveContextWindow = contextWindowOverride > 0
       ? contextWindowOverride
@@ -1852,19 +1989,23 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     const missingModels = auditModelAvailability(ctx);
     const memoryMode = YAMS_ENABLED ? "yams:on" : "yams:off";
     const rlmMode = RLM_ENABLED ? "rlm:on" : "rlm:off";
+    const activeProvider = ENV_OPTIMIZER_PROVIDER || resolveActiveProvider(ctx);
+    const sessionSc = getSidecarConfig(activeProvider);
+    const rlmExtractorModelId = ENV_RLM_EXTRACTOR_MODEL || sessionSc.rlmExtractor;
     const rlmExtractorInfo = RLM_ENABLED && RLM_EXTRACTOR_MODE === "model"
-      ? `rlm-extractor:model(${RLM_EXTRACTOR_MODEL})`
+      ? `rlm-extractor:model(${rlmExtractorModelId})`
       : "rlm-extractor:heuristic";
     const dcsMode = RLM_DCS_SESSION_ENRICHMENT ? "dcs:on" : "dcs:off";
     trace("session_start", {
       optimizerModel: state.optimizerModel,
-      primaryModel: PRIMARY_MODEL,
+      primaryModel: primaryModelId || null,
+      activeProvider,
       configuredContextWindow,
       effectiveContextWindow,
       memoryMode,
       rlmMode,
       rlmExtractorMode: RLM_EXTRACTOR_MODE,
-      rlmExtractorModel: RLM_EXTRACTOR_MODE === "model" ? RLM_EXTRACTOR_MODEL : null,
+      rlmExtractorModel: RLM_EXTRACTOR_MODE === "model" ? rlmExtractorModelId : null,
       rlmSessionId,
       dcsSessionEnrichment: RLM_DCS_SESSION_ENRICHMENT,
       optimizations: state.optimizations,
@@ -1910,6 +2051,12 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
           "warning"
         );
       }
+    }
+    // Scale context thresholds proportionally for the effective context window.
+    // This ensures tier boundaries, compaction triggers, and budget warnings
+    // remain sensible regardless of which model is loaded.
+    if (effectiveContextWindow && effectiveContextWindow > 0) {
+      scaleContextThresholds(effectiveContextWindow);
     }
   });
 
@@ -2124,7 +2271,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       trace("optimizer_attempt", {
         promptChars: probe.length,
         attempt: state.optimizerAttempts,
-        configuredModel: DEFAULT_OPTIMIZER_MODEL,
+        configuredModel: ENV_OPTIMIZER_MODEL || getSidecarConfig(resolveActiveProvider(ctx)).optimizer,
         probe: true,
       });
       const optimized = await optimizeWithModel(ctx, probe, state, "general");
@@ -2166,7 +2313,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       trace("optimizer_attempt", {
         promptChars: probe.length,
         attempt: state.optimizerAttempts,
-        configuredModel: RESEARCH_OPTIMIZER_MODEL,
+        configuredModel: ENV_RESEARCH_OPTIMIZER_MODEL || getSidecarConfig(resolveActiveProvider(ctx)).researchOptimizer,
         probe: true,
         profile: "research",
       });
@@ -2334,8 +2481,12 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       }
     }
 
+    const msgProvider = ENV_OPTIMIZER_PROVIDER || resolveActiveProvider(ctx);
+    const msgSc = getSidecarConfig(msgProvider);
     let result = buildFallback(effectivePrompt);
-    let optimizerModelId = profile === "research" ? RESEARCH_OPTIMIZER_MODEL : DEFAULT_OPTIMIZER_MODEL;
+    let optimizerModelId = profile === "research"
+      ? (ENV_RESEARCH_OPTIMIZER_MODEL || msgSc.researchOptimizer)
+      : (ENV_OPTIMIZER_MODEL || msgSc.optimizer);
     let source: "model" | "fallback" = "fallback";
     let oracleReview: OracleReview | undefined;
 
@@ -2400,6 +2551,16 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
         profile,
         promptChars: effectivePrompt.length,
         rawPromptChars: prompt.length,
+      });
+    } else {
+      // Prompt is too short for optimization and does not need deep mode.
+      trace("optimizer_skipped", {
+        reason: "short_prompt",
+        promptChars: effectivePrompt.length,
+        rawPromptChars: prompt.length,
+        minChars: MIN_PROMPT_CHARS_FOR_OPTIMIZER,
+        needsDeep: false,
+        profile,
       });
     }
 
@@ -2782,6 +2943,9 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("turn_end", async (_event, ctx) => {
+    // Sweep stale temp files from deferred YAMS ingest cleanup.
+    rlmTempFileManager.sweep();
+
     if (compactionInFlight) return;
 
     // Don't attempt compaction if the turn ended abnormally (model error/termination)
@@ -2880,6 +3044,8 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     stopCompactionPoll();
     compactionInFlight = false;
     effectiveContextWindow = null;
+    // Flush all deferred temp files — session is ending, daemon has had time to ingest.
+    rlmTempFileManager.flushAll();
     setStatus(ctx);
   });
 }

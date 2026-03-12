@@ -84,6 +84,126 @@ function trace(type: string, payload: Record<string, unknown> = {}): void {
 }
 
 // ---------------------------------------------------------------------------
+// Deferred temp file cleanup — prevents race with async YAMS ingest
+// ---------------------------------------------------------------------------
+
+/** How long to keep temp files before sweeping (15 min). */
+const DEFERRED_TTL_MS = 15 * 60 * 1000;
+/** Maximum number of pending temp files before forced eviction. */
+const DEFERRED_MAX_FILES = 200;
+
+type DeferredFile = { path: string; createdAt: number };
+
+/**
+ * Manages deferred cleanup of temp files written for YAMS ingest.
+ *
+ * `yams add` is async — it enqueues a document and returns immediately.
+ * The daemon's IngestService processes the queue later and reads the file
+ * from disk. If we `unlinkSync` the temp file in a `finally` block right
+ * after `exec("yams", ["add", ...])` returns, the daemon may find the file
+ * already deleted.
+ *
+ * Instead, temp files are registered here and cleaned up:
+ * - Periodically (files older than DEFERRED_TTL_MS) via `sweep()`
+ * - On session_shutdown via `flushAll()`
+ * - When the pending count exceeds DEFERRED_MAX_FILES (oldest evicted)
+ */
+class TempFileManager {
+  private _pending: DeferredFile[] = [];
+
+  /** Register a temp file for deferred cleanup. */
+  register(filePath: string, now?: number): void {
+    this._pending.push({ path: filePath, createdAt: now ?? Date.now() });
+    // If we exceed the bound, evict oldest files immediately
+    while (this._pending.length > DEFERRED_MAX_FILES) {
+      const oldest = this._pending.shift()!;
+      try {
+        fs.unlinkSync(oldest.path);
+      } catch {
+        // Already gone or inaccessible — fine.
+      }
+    }
+  }
+
+  /** Sweep files older than TTL. Returns count of files removed. */
+  sweep(now?: number): number {
+    const cutoff = (now ?? Date.now()) - DEFERRED_TTL_MS;
+    let removed = 0;
+    const remaining: DeferredFile[] = [];
+
+    for (const entry of this._pending) {
+      if (entry.createdAt < cutoff) {
+        try {
+          fs.unlinkSync(entry.path);
+        } catch {
+          // Already gone — fine.
+        }
+        removed++;
+      } else {
+        remaining.push(entry);
+      }
+    }
+
+    this._pending = remaining;
+    return removed;
+  }
+
+  /** Flush all pending files (called on session_shutdown). */
+  flushAll(): number {
+    let removed = 0;
+    for (const entry of this._pending) {
+      try {
+        fs.unlinkSync(entry.path);
+        removed++;
+      } catch {
+        // Already gone — fine.
+      }
+    }
+    this._pending = [];
+    return removed;
+  }
+
+  get pendingCount(): number {
+    return this._pending.length;
+  }
+}
+
+/** Module-level temp file manager for the semantic compressor. */
+const tempFileManager = new TempFileManager();
+
+// ---------------------------------------------------------------------------
+// Query text sanitization helpers
+// ---------------------------------------------------------------------------
+
+/** Strip wrapper/meta tags that leak from LLM output into queries. */
+function stripWrapperTags(text: string): string {
+  // Remove matched pairs first (tag + content between them)
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "");
+  text = text.replace(/<antThinking>[\s\S]*?<\/antThinking>/gi, "");
+  text = text.replace(/<reflection>[\s\S]*?<\/reflection>/gi, "");
+  text = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/gi, "");
+  text = text.replace(/<internal>[\s\S]*?<\/internal>/gi, "");
+  // Remove orphaned opening tags and everything after them (content is likely internal)
+  text = text.replace(/<(?:think|system-reminder|antThinking|reflection|scratchpad|internal)(?:\s[^>]*)?>[\s\S]*/gi, "");
+  // Remove orphaned closing tags
+  text = text.replace(/<\/(?:think|system-reminder|antThinking|reflection|scratchpad|internal)(?:\s[^>]*)?>/gi, "");
+  // Remove any remaining angle-bracket tag-like patterns that are clearly not content
+  // (e.g., <foo_bar> but NOT mathematical expressions like "x < 5")
+  text = text.replace(/<\/?[a-zA-Z_][\w-]*(?:\s[^>]*)?>/g, "");
+  return text;
+}
+
+/** Collapse whitespace, strip control characters. */
+function sanitizeQueryText(text: string): string {
+  // Remove control characters (except newline/tab which are whitespace)
+  text = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  // Collapse all whitespace to single spaces
+  text = text.replace(/\s+/g, " ");
+  return text.trim();
+}
+
+// ---------------------------------------------------------------------------
 // Chunk types — extends the original RLM types
 // ---------------------------------------------------------------------------
 
@@ -325,8 +445,9 @@ function extractTurnChunks(messages: any[], maxChunks: number): ContextChunk[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Store a single chunk in YAMS. Replicates the pattern from
- * hybrid-optimizer.ts `storeRlmChunk`.
+ * Store a single chunk in YAMS. Uses deferred cleanup instead of immediate
+ * `unlinkSync` to avoid the race condition where `yams add` returns before
+ * the daemon's IngestService reads the file from disk.
  */
 async function storeChunk(
   pi: ExtensionAPI,
@@ -358,15 +479,13 @@ async function storeChunk(
       ],
       { timeout: CHUNK_STORE_TIMEOUT_MS },
     );
+    // Deferred cleanup — file stays alive for daemon to read
+    tempFileManager.register(tmpFile);
     return result.code === 0;
   } catch {
+    // On failure, still defer (the daemon might still be processing)
+    tempFileManager.register(tmpFile);
     return false;
-  } finally {
-    try {
-      fs.unlinkSync(tmpFile);
-    } catch {
-      // Ignore cleanup errors.
-    }
   }
 }
 
@@ -522,6 +641,9 @@ async function fetchRelevantChunks(
  * Build a query string from recent messages for YAMS retrieval.
  * Takes the most recent user message + assistant conclusions to form a
  * semantically rich query.
+ *
+ * Aggressively strips LLM wrapper tags (<think>, <system-reminder>, etc.)
+ * that can leak into search queries and break FTS5 syntax parsing.
  */
 function buildRetrievalQuery(messages: any[]): string {
   const parts: string[] = [];
@@ -531,23 +653,19 @@ function buildRetrievalQuery(messages: any[]): string {
     const msg = messages[i];
     const role = msg?.role;
     if (role === "user") {
-      const text = extractText(msg.content)
-        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
-        .trim();
+      const text = stripWrapperTags(extractText(msg.content)).trim();
       if (text.length > 30) {
         parts.push(text.slice(0, 400));
       }
     } else if (role === "assistant") {
-      const text = extractText(msg.content)
-        .replace(/<think>[\s\S]*?<\/think>/gi, "")
-        .trim();
+      const text = stripWrapperTags(extractText(msg.content)).trim();
       if (text.length > 50) {
         parts.push(text.slice(0, 300));
       }
     }
   }
 
-  return parts.join(" ").slice(0, 900);
+  return sanitizeQueryText(parts.join(" ").slice(0, 900));
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +993,11 @@ export default function contextChunkerExtension(pi: ExtensionAPI): void {
    */
   pi.on("turn_end", async (_event, ctx) => {
     if (!currentMessages || currentMessages.length === 0) return;
+    // Sweep stale temp files (older than TTL) to prevent accumulation
+    const swept = tempFileManager.sweep();
+    if (swept > 0) {
+      trace("temp_file_sweep", { removed: swept, remaining: tempFileManager.pendingCount });
+    }
     try {
       await processTurnEnd(pi, ctx, currentMessages);
     } catch (err: any) {
@@ -884,7 +1007,9 @@ export default function contextChunkerExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, _ctx) => {
     const stats = contextChunker.stats();
-    trace("session_shutdown", stats);
+    // Flush all remaining temp files on session end
+    const flushed = tempFileManager.flushAll();
+    trace("session_shutdown", { ...stats, tempFilesFlushed: flushed });
     contextChunker._reset();
     currentMessages = null;
   });

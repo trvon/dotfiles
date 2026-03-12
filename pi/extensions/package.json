@@ -1,0 +1,11 @@
+{
+  "name": "pi-local-extensions",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Local Pi extensions – deps pinned to Pi 0.56.0",
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.56.0",
+    "@mariozechner/pi-coding-agent": "0.56.0"
+  }
+}

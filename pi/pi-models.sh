@@ -6,7 +6,7 @@
 #   llama-cpp  — llama.cpp server (GGUF quantization, speculative decoding)
 #
 # MLX mode launches:
-#   PRIMARY  (port 8090): Qwen3.5-35B-A3B 6-bit via mlx_lm.server (~86 t/s gen)
+#   PRIMARY  (port 8090): Qwen3.5-35B-A3B 5-bit via mlx_lm.server
 #   SIDECAR  (port 8091): Qwen3.5-9B 4-bit via mlx_lm.server (~83 t/s gen)
 #
 # llama-cpp mode launches:
@@ -36,6 +36,11 @@
 #   PI_MLX_KV_BITS       (default: empty=off. Set to 8 for long-context sessions)
 #   PI_MLX_KV_GROUP_SIZE (default: 64)
 #   PI_MLX_KV_START      (default: 1024, tokens before switching to quantized KV)
+#   PI_HF_CACHE_DIR      (default: ~/.cache/huggingface/hub)
+#   PI_MLX_PRIMARY_LOCAL (preferred local path override for primary model)
+#   PI_MLX_PRIMARY_REPO  (repo fallback for primary model)
+#   PI_MLX_SIDECAR_LOCAL (preferred local path override for sidecar model)
+#   PI_MLX_SIDECAR_REPO  (repo fallback for sidecar model)
 #
 set -euo pipefail
 
@@ -160,9 +165,20 @@ PRIMARY_HF="unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
 DRAFT_HF="unsloth/Qwen3.5-4B-GGUF:Q4_K_XL"
 SIDECAR_HF="unsloth/Qwen3.5-9B-GGUF:Q4_K_XL"
 
-# MLX model repos (HuggingFace, downloaded to ~/.cache/huggingface/)
-MLX_PRIMARY_MODEL="mlx-community/Qwen3.5-35B-A3B-6bit"
-MLX_SIDECAR_MODEL="mlx-community/Qwen3.5-9B-4bit"
+# MLX model paths/repos
+# Source resolution order (per role): local path -> complete HF cache snapshot -> repo id.
+MLX_CACHE_ROOT="${PI_HF_CACHE_DIR:-$HOME/.cache/huggingface/hub}"
+
+MLX_PRIMARY_LOCAL="${PI_MLX_PRIMARY_LOCAL:-$HOME/.pi/benchmarks/qwen35-quants/Qwen3.5-35B-A3B-5bit}"
+MLX_PRIMARY_REPO="${PI_MLX_PRIMARY_REPO:-mlx-community/Qwen3.5-35B-A3B-5bit}"
+
+MLX_SIDECAR_LOCAL="${PI_MLX_SIDECAR_LOCAL:-}"
+MLX_SIDECAR_REPO="${PI_MLX_SIDECAR_REPO:-mlx-community/Qwen3.5-9B-4bit}"
+
+MLX_PRIMARY_MODEL="$MLX_PRIMARY_REPO"
+MLX_SIDECAR_MODEL="$MLX_SIDECAR_REPO"
+MLX_PRIMARY_SOURCE="repo"
+MLX_SIDECAR_SOURCE="repo"
 
 # MLX server settings
 # max-tokens: high default (mlx_lm.server defaults to 512 which is too low)
@@ -228,6 +244,73 @@ is_running() {
 get_pid() {
   local pid_file="$1"
   [[ -f "$pid_file" ]] && cat "$pid_file" 2>/dev/null || echo ""
+}
+
+is_complete_mlx_model_dir() {
+  local model_dir="$1"
+  [[ -d "$model_dir" ]] || return 1
+  [[ -f "$model_dir/config.json" ]] || return 1
+
+  python3 - "$model_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+model_dir = Path(sys.argv[1])
+index_file = model_dir / "model.safetensors.index.json"
+
+if index_file.exists():
+    try:
+        data = json.loads(index_file.read_text())
+        weight_map = data.get("weight_map") or {}
+        shard_files = sorted(set(weight_map.values()))
+        if not shard_files:
+            raise SystemExit(1)
+        missing = [name for name in shard_files if not (model_dir / name).exists()]
+        raise SystemExit(0 if not missing else 1)
+    except Exception:
+        raise SystemExit(1)
+
+safetensors = list(model_dir.glob("model*.safetensors"))
+raise SystemExit(0 if safetensors else 1)
+PY
+}
+
+resolve_mlx_model_source() {
+  local local_path="$1"
+  local repo_id="$2"
+
+  if [[ -n "$local_path" ]] && is_complete_mlx_model_dir "$local_path"; then
+    printf '%s\t%s\n' "$local_path" "local"
+    return 0
+  fi
+
+  local cache_key
+  cache_key="${repo_id//\//--}"
+  local cache_repo_root="$MLX_CACHE_ROOT/models--$cache_key"
+  local cache_snapshots="$cache_repo_root/snapshots"
+  if [[ -d "$cache_snapshots" ]]; then
+    local snapshot
+    snapshot=$(python3 - "$cache_snapshots" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+dirs = [p for p in root.iterdir() if p.is_dir()]
+if not dirs:
+    print("")
+else:
+    dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    print(str(dirs[0]))
+PY
+)
+    if [[ -n "$snapshot" ]] && is_complete_mlx_model_dir "$snapshot"; then
+      printf '%s\t%s\n' "$snapshot" "cache"
+      return 0
+    fi
+  fi
+
+  printf '%s\t%s\n' "$repo_id" "repo"
 }
 
 wait_for_health() {
@@ -321,6 +404,18 @@ cmd_start_mlx() {
   local mlx_primary_port="${PI_PRIMARY_PORT:-8090}"
   local mlx_sidecar_port="${PI_SIDECAR_PORT:-8091}"
 
+  local resolved_primary=""
+  local resolved_primary_source=""
+  IFS=$'\t' read -r resolved_primary resolved_primary_source < <(resolve_mlx_model_source "$MLX_PRIMARY_LOCAL" "$MLX_PRIMARY_REPO")
+  MLX_PRIMARY_MODEL="$resolved_primary"
+  MLX_PRIMARY_SOURCE="$resolved_primary_source"
+
+  local resolved_sidecar=""
+  local resolved_sidecar_source=""
+  IFS=$'\t' read -r resolved_sidecar resolved_sidecar_source < <(resolve_mlx_model_source "$MLX_SIDECAR_LOCAL" "$MLX_SIDECAR_REPO")
+  MLX_SIDECAR_MODEL="$resolved_sidecar"
+  MLX_SIDECAR_SOURCE="$resolved_sidecar_source"
+
   # ── Start MLX PRIMARY server ──
   if is_running "$MLX_PRIMARY_PID"; then
     log "MLX primary server already running (PID $(get_pid "$MLX_PRIMARY_PID"))"
@@ -332,6 +427,7 @@ cmd_start_mlx() {
     fi
 
     log "Starting MLX primary server: $MLX_PRIMARY_MODEL"
+    log "  Source: $MLX_PRIMARY_SOURCE"
     log "  Backend: MLX (Apple Silicon Metal) | Port: $mlx_primary_port"
     log "  Max tokens: $MLX_MAX_TOKENS | Decode concurrency: $MLX_DECODE_CONCURRENCY | Prompt concurrency: $MLX_PROMPT_CONCURRENCY"
     log "  Sampling (Unsloth precise coding): temp=$SAMPLING_TEMP top_p=$SAMPLING_TOP_P top_k=$SAMPLING_TOP_K"
@@ -342,22 +438,40 @@ cmd_start_mlx() {
     fi
     log "  Chat template args: enable_thinking=true"
 
-    nohup "$MLX_PYTHON" "$MLX_WRAPPER" \
-      "${kv_flags[@]}" \
-      --model "$MLX_PRIMARY_MODEL" \
-      --port "$mlx_primary_port" \
-      --host "127.0.0.1" \
-      --temp "$SAMPLING_TEMP" \
-      --top-p "$SAMPLING_TOP_P" \
-      --top-k "$SAMPLING_TOP_K" \
-      --min-p "$SAMPLING_MIN_P" \
-      --max-tokens "$MLX_MAX_TOKENS" \
-      --decode-concurrency "$MLX_DECODE_CONCURRENCY" \
-      --prompt-concurrency "$MLX_PROMPT_CONCURRENCY" \
-      --trust-remote-code \
-      --chat-template-args '{"enable_thinking":true}' \
-      --log-level INFO \
-      > "$MLX_PRIMARY_LOG" 2>&1 &
+    if [[ ${#kv_flags[@]} -gt 0 ]]; then
+      nohup "$MLX_PYTHON" "$MLX_WRAPPER" \
+        "${kv_flags[@]}" \
+        --model "$MLX_PRIMARY_MODEL" \
+        --port "$mlx_primary_port" \
+        --host "127.0.0.1" \
+        --temp "$SAMPLING_TEMP" \
+        --top-p "$SAMPLING_TOP_P" \
+        --top-k "$SAMPLING_TOP_K" \
+        --min-p "$SAMPLING_MIN_P" \
+        --max-tokens "$MLX_MAX_TOKENS" \
+        --decode-concurrency "$MLX_DECODE_CONCURRENCY" \
+        --prompt-concurrency "$MLX_PROMPT_CONCURRENCY" \
+        --trust-remote-code \
+        --chat-template-args '{"enable_thinking":true}' \
+        --log-level INFO \
+        > "$MLX_PRIMARY_LOG" 2>&1 &
+    else
+      nohup "$MLX_PYTHON" "$MLX_WRAPPER" \
+        --model "$MLX_PRIMARY_MODEL" \
+        --port "$mlx_primary_port" \
+        --host "127.0.0.1" \
+        --temp "$SAMPLING_TEMP" \
+        --top-p "$SAMPLING_TOP_P" \
+        --top-k "$SAMPLING_TOP_K" \
+        --min-p "$SAMPLING_MIN_P" \
+        --max-tokens "$MLX_MAX_TOKENS" \
+        --decode-concurrency "$MLX_DECODE_CONCURRENCY" \
+        --prompt-concurrency "$MLX_PROMPT_CONCURRENCY" \
+        --trust-remote-code \
+        --chat-template-args '{"enable_thinking":true}' \
+        --log-level INFO \
+        > "$MLX_PRIMARY_LOG" 2>&1 &
+    fi
 
     echo $! > "$MLX_PRIMARY_PID"
     log "MLX primary server launched (PID $(get_pid "$MLX_PRIMARY_PID"))"
@@ -368,6 +482,7 @@ cmd_start_mlx() {
     log "MLX sidecar server already running (PID $(get_pid "$MLX_SIDECAR_PID"))"
   else
     log "Starting MLX sidecar server: $MLX_SIDECAR_MODEL"
+    log "  Source: $MLX_SIDECAR_SOURCE"
     log "  Backend: MLX (Apple Silicon Metal) | Port: $mlx_sidecar_port"
     log "  Max tokens: $MLX_MAX_TOKENS | Decode concurrency: $MLX_DECODE_CONCURRENCY | Prompt concurrency: $MLX_PROMPT_CONCURRENCY"
     log "  Sampling (Unsloth precise coding): temp=$SAMPLING_TEMP top_p=$SAMPLING_TOP_P top_k=$SAMPLING_TOP_K"
@@ -397,8 +512,8 @@ cmd_start_mlx() {
   # ── Health checks ──
   log ""
   log "Waiting for MLX servers to load models (first run downloads from HuggingFace)..."
-  log "  Primary: ~20 GB ($MLX_PRIMARY_MODEL)"
-  log "  Sidecar: ~5 GB ($MLX_SIDECAR_MODEL)"
+  log "  Primary: ~29 GB ($MLX_PRIMARY_MODEL | source=$MLX_PRIMARY_SOURCE)"
+  log "  Sidecar: ~5 GB ($MLX_SIDECAR_MODEL | source=$MLX_SIDECAR_SOURCE)"
   log ""
 
   local primary_ok=false sidecar_ok=false
@@ -417,12 +532,12 @@ cmd_start_mlx() {
   log "│       Pi Models Server Status (MLX)          │"
   log "├─────────────────────────────────────────────┤"
   if $primary_ok; then
-    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (~86 t/s, 6-bit)"
+    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (5-bit, $MLX_PRIMARY_SOURCE)"
   else
     log "│  PRIMARY  ✗  :$mlx_primary_port  (not ready)"
   fi
   if $sidecar_ok; then
-    log "│  SIDECAR  ✓  :$mlx_sidecar_port  qwen3.5-9b (~83 t/s)"
+    log "│  SIDECAR  ✓  :$mlx_sidecar_port  qwen3.5-9b (~83 t/s, $MLX_SIDECAR_SOURCE)"
   else
     log "│  SIDECAR  ✗  :$mlx_sidecar_port  (not ready)"
   fi
@@ -616,6 +731,13 @@ cmd_status() {
   log "Server status:"
   log ""
 
+  local resolved_primary=""
+  local resolved_primary_source=""
+  IFS=$'\t' read -r resolved_primary resolved_primary_source < <(resolve_mlx_model_source "$MLX_PRIMARY_LOCAL" "$MLX_PRIMARY_REPO")
+  local resolved_sidecar=""
+  local resolved_sidecar_source=""
+  IFS=$'\t' read -r resolved_sidecar resolved_sidecar_source < <(resolve_mlx_model_source "$MLX_SIDECAR_LOCAL" "$MLX_SIDECAR_REPO")
+
   local any_running=false
 
   # ── llama-cpp servers ──
@@ -667,7 +789,7 @@ print(f'{busy}/{total} slots busy')
     local mlx_primary_port="${PI_PRIMARY_PORT:-8090}"
     local health
     health=$(curl -sf "http://localhost:${mlx_primary_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
-    log "  MLX PRIMARY    PID=$pid  port=$mlx_primary_port  health=$health"
+    log "  MLX PRIMARY    PID=$pid  port=$mlx_primary_port  health=$health  source=$resolved_primary_source"
   fi
 
   if is_running "$MLX_SIDECAR_PID"; then
@@ -677,7 +799,7 @@ print(f'{busy}/{total} slots busy')
     local mlx_sidecar_port="${PI_SIDECAR_PORT:-8091}"
     local health
     health=$(curl -sf "http://localhost:${mlx_sidecar_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
-    log "  MLX SIDECAR    PID=$pid  port=$mlx_sidecar_port  health=$health"
+    log "  MLX SIDECAR    PID=$pid  port=$mlx_sidecar_port  health=$health  source=$resolved_sidecar_source"
   fi
 
   if ! $any_running; then

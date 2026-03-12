@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 
 import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getSidecarConfig, resolveActiveProvider, resolveSidecarProvider } from "./model-backend.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -15,8 +16,8 @@ const TRACE_ENABLED = parseBoolean(process.env.PI_COMPACTION_GUARD_TRACE_ENABLED
 const FORCE_SIMPLE_UNDER_TOKENS = parsePositiveInt(process.env.PI_COMPACTION_GUARD_FORCE_SIMPLE_UNDER_TOKENS, 512);
 
 // 9b summarization configuration
-const COMPACTION_MODEL = process.env.PI_COMPACTION_MODEL || "qwen3.5-9b";
-const COMPACTION_PROVIDER = process.env.PI_COMPACTION_PROVIDER || "lmstudio";
+const ENV_COMPACTION_MODEL = (process.env.PI_COMPACTION_MODEL || "").trim();
+const ENV_COMPACTION_PROVIDER = (process.env.PI_COMPACTION_PROVIDER || "").trim();
 const COMPACTION_INACTIVITY_MS = parsePositiveInt(process.env.PI_COMPACTION_INACTIVITY_MS, 30000);
 const COMPACTION_MAX_INPUT_CHARS = parsePositiveInt(process.env.PI_COMPACTION_MAX_INPUT_CHARS, 24000);
 const COMPACTION_MAX_TOKENS = parsePositiveInt(process.env.PI_COMPACTION_MAX_TOKENS, 4096);
@@ -288,9 +289,8 @@ function serializeMessages(messages: any[], charBudget: number): string {
   return parts.join("\n\n");
 }
 
-// Summarization prompt (adapted from Pi's built-in, with /no_think for sidecar)
-const COMPACT_SUMMARIZATION_PROMPT = `/no_think
-The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+// Summarization prompt (adapted from Pi's built-in)
+const COMPACT_SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
 
@@ -323,8 +323,7 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const COMPACT_UPDATE_PROMPT = `/no_think
-The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+const COMPACT_UPDATE_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
@@ -363,20 +362,23 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-const COMPACT_SYSTEM_PROMPT = `/no_think
-You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
+const COMPACT_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
 
 /**
- * Resolve the 9b model for compaction summarization.
+ * Resolve the sidecar model for compaction summarization.
  * Returns null if the model is not available.
  */
 function resolveCompactionModel(ctx: ExtensionContext): any {
-  const model = ctx.modelRegistry.find(COMPACTION_PROVIDER, COMPACTION_MODEL);
+  const provider = ENV_COMPACTION_PROVIDER || resolveActiveProvider(ctx);
+  const sc = getSidecarConfig(provider);
+  const lookupProvider = ENV_COMPACTION_PROVIDER || resolveSidecarProvider(provider);
+  const modelId = ENV_COMPACTION_MODEL || sc.compaction;
+  const model = ctx.modelRegistry.find(lookupProvider, modelId);
   if (model) return model;
 
-  trace("compaction_model_unavailable", { provider: COMPACTION_PROVIDER, model: COMPACTION_MODEL });
+  trace("compaction_model_unavailable", { provider: lookupProvider, model: modelId });
   return null;
 }
 
@@ -575,8 +577,8 @@ async function generateSummaryWithSidecar(
       ?.trim();
 
     if (!textContent || textContent.length < 50) {
-      // Secondary extraction: 9b sometimes emits ONLY thinking-type blocks
-      // even with /no_think. The thinking content is still a valid summary.
+      // Secondary extraction: 9b sometimes emits ONLY thinking-type blocks.
+      // The thinking content is still a valid summary.
       const thinkingRaw = (response as any).content
         ?.filter((c: any) => c.type === "thinking")
         ?.map((c: any) => c.thinking || c.text || "")
@@ -609,7 +611,7 @@ async function generateSummaryWithSidecar(
       return { summary: null, failureReason: "empty_model_response" };
     }
 
-    // Strip any residual <think> blocks that leaked through despite /no_think
+    // Strip any residual <think> blocks from model output
     const cleaned = textContent.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
     trace("compaction_9b_success", {
@@ -639,20 +641,22 @@ export default function compactionGuardExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     const cw = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
     const compactionModel = resolveCompactionModel(ctx);
+    const activeProvider = ENV_COMPACTION_PROVIDER || resolveActiveProvider(ctx);
+    const compactionModelId = compactionModel?.id || (ENV_COMPACTION_MODEL || getSidecarConfig(activeProvider).compaction);
     const dcsLabel = DCS_COMPACTION_ENABLED ? "+dcs" : "";
     if (ctx.hasUI) {
       const t = ctx.ui.theme;
       ctx.ui.setStatus(
         "compaction-guard",
-        `${t.fg("dim", "compact:")}${t.fg("accent", compactionModel ? `9b${dcsLabel}` : `heuristic${dcsLabel}`)}${t.fg("dim", ` ${ctx.model?.id || "unknown"}`)}`
+        `${t.fg("dim", "compact:")}${t.fg("accent", compactionModel ? `${compactionModelId}${dcsLabel}` : `heuristic${dcsLabel}`)}${t.fg("dim", ` ${ctx.model?.id || "unknown"}`)}`
       );
-      ctx.ui.notify(`Compaction guard active (summarizer: ${DCS_COMPACTION_ENABLED ? "DCS->9b" : compactionModel ? COMPACTION_MODEL : "heuristic"}).`);
+      ctx.ui.notify(`Compaction guard active (summarizer: ${DCS_COMPACTION_ENABLED ? "DCS->sidecar" : compactionModel ? compactionModelId : "heuristic"}).`);
     }
     trace("session_start", {
       model: ctx.model?.id,
       contextWindow: cw,
       compactionModel: compactionModel?.id || null,
-      compactionProvider: COMPACTION_PROVIDER,
+      compactionProvider: activeProvider,
       dcsEnabled: DCS_COMPACTION_ENABLED,
     });
   });
@@ -662,7 +666,7 @@ export default function compactionGuardExtension(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       const cw = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : 8192;
       const compactionModel = resolveCompactionModel(ctx);
-      const msg = `compaction-guard active | model=${ctx.model?.id || "unknown"} | contextWindow=${cw} | summarizer=${compactionModel ? COMPACTION_MODEL : "heuristic"} | dcs=${DCS_COMPACTION_ENABLED ? "on" : "off"}`;
+      const msg = `compaction-guard active | model=${ctx.model?.id || "unknown"} | contextWindow=${cw} | summarizer=${compactionModel ? compactionModel.id : "heuristic"} | provider=${ENV_COMPACTION_PROVIDER || resolveActiveProvider(ctx)} | dcs=${DCS_COMPACTION_ENABLED ? "on" : "off"}`;
       if (ctx.hasUI) ctx.ui.notify(msg);
       trace("status", { model: ctx.model?.id, contextWindow: cw, compactionModel: compactionModel?.id || null, dcsEnabled: DCS_COMPACTION_ENABLED });
     },
@@ -738,7 +742,7 @@ export default function compactionGuardExtension(pi: ExtensionAPI): void {
 
     if (modelSummary) {
       if (ctx.hasUI) {
-        ctx.ui.notify(`Compaction guard: summarized with ${COMPACTION_MODEL}.`);
+        ctx.ui.notify(`Compaction guard: summarized with sidecar model.`);
       }
       return {
         compaction: {
@@ -766,7 +770,7 @@ export default function compactionGuardExtension(pi: ExtensionAPI): void {
       if (retrySummary) {
         trace("compaction_9b_retry_success", { summaryChars: retrySummary.length });
         if (ctx.hasUI) {
-          ctx.ui.notify(`Compaction guard: summarized with ${COMPACTION_MODEL} (retry).`);
+          ctx.ui.notify(`Compaction guard: summarized with sidecar model (retry).`);
         }
         return {
           compaction: {

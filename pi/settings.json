@@ -1,7 +1,7 @@
 {
-  "lastChangelogVersion": "0.55.3",
-  "defaultProvider": "lmstudio",
-  "defaultModel": "unsloth/qwen3.5-35b-a3b",
+  "lastChangelogVersion": "0.56.3",
+  "defaultProvider": "mlx",
+  "defaultModel": "qwen3.5-35b-a3b",
   "defaultThinkingLevel": "high",
   "thinkingBudgets": {
     "minimal": 512,
@@ -21,6 +21,7 @@
     "maxDelayMs": 20000
   },
   "enabledModels": [
+    "qwen3.5-35b-a3b",
     "qwen3.5-9b",
     "unsloth/qwen3.5-27b",
     "unsloth/qwen3.5-35b-a3b"

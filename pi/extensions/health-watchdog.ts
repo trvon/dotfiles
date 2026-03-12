@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 
 import { stream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { extractResponseText, getSidecarConfig, resolveActiveProvider, resolveSidecarProvider } from "./model-backend.ts";
 
 type CronDeliverMode = "immediate" | "followUp";
 
@@ -30,6 +31,8 @@ type TerminationCandidate = {
   priorAssistantClosed: boolean;
   detectedAt: number;
   signature: string;
+  kind?: "termination" | "pseudo_tool_call" | "semantic_tool_failure";
+  metadata?: Record<string, unknown>;
 };
 
 type WatchdogConfig = {
@@ -55,13 +58,19 @@ type WatchdogConfig = {
   terminationVerifyAmbiguous: boolean;
   terminationRequireErrorStop: boolean;
   terminationCooldownMs: number;
+  suppressRecoveryOnAbort: boolean;
   traceFile: string;
+};
+
+type WatchdogWindowCount = {
+  recent: number;
+  total: number;
 };
 
 const RETRY_PREFIX = "[health-watchdog:auto-retry]";
 const CRON_PREFIX = "[health-watchdog:cron]";
 const TOOL_GUARD_PREFIX = "[health-watchdog:tool-guard]";
-const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
+const ENV_PRIMARY_MODEL = (process.env.PI_PRIMARY_MODEL || "").trim();
 const VERIFIER_UI_PROGRESS_NOTIFY_MS = parsePositiveInt(
   process.env.PI_HEALTH_WATCHDOG_UI_PROGRESS_NOTIFY_MS,
   1500
@@ -93,8 +102,8 @@ const DEFAULT_CONFIG: WatchdogConfig = {
   notify: true,
   cronConfigPath: `${homedir()}/.pi/agent/health-watchdog-cron.json`,
   verifyBeforeRetry: true,
-  verifierProvider: "lmstudio",
-  verifierModel: PRIMARY_MODEL,
+  verifierProvider: (process.env.PI_HEALTH_WATCHDOG_VERIFIER_PROVIDER || "").trim() || "",  // empty = resolve from ctx at call time
+  verifierModel: ENV_PRIMARY_MODEL,
   verifierMaxTokens: 120,
   verifierInactivityMs: 20_000,
   recoverOnTermination: true,
@@ -103,10 +112,12 @@ const DEFAULT_CONFIG: WatchdogConfig = {
   terminationVerifyAmbiguous: true,
   terminationRequireErrorStop: true,
   terminationCooldownMs: 10_000,
+  suppressRecoveryOnAbort: true,
   traceFile: `${homedir()}/.pi/agent/health-watchdog.jsonl`,
 };
 
 const PRIOR_COMPLETE_MAX_AGE_MS = 15_000;
+const WATCHDOG_COMMAND_WINDOW_MS = parsePositiveInt(process.env.PI_WATCHDOG_COMMAND_WINDOW_MS, 900_000);
 
 function extractText(content: any): string {
   if (typeof content === "string") return content;
@@ -124,6 +135,125 @@ function extractText(content: any): string {
     if (typeof block.content === "string") chunks.push(block.content);
   }
   return chunks.join("\n");
+}
+
+function readRecentWatchdogEvents(filePath: string, maxLines = 500): any[] {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, "utf-8");
+    return raw
+      .split("\n")
+      .filter(Boolean)
+      .slice(-maxLines)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function makeWindowCount(): WatchdogWindowCount {
+  return { recent: 0, total: 0 };
+}
+
+function bumpWindowCount(counter: WatchdogWindowCount, inRecentWindow: boolean): void {
+  counter.total += 1;
+  if (inRecentWindow) counter.recent += 1;
+}
+
+function eventIsRecent(event: any, nowMs: number, windowMs: number): boolean {
+  const tsMs = typeof event?.ts === "string" ? Date.parse(event.ts) : NaN;
+  return Number.isFinite(tsMs) && nowMs - tsMs <= windowMs;
+}
+
+function formatClock(ts: unknown): string {
+  if (typeof ts !== "string") return "??:??:??";
+  const time = ts.split("T")[1] || "";
+  return time.replace("Z", "").slice(0, 8) || "??:??:??";
+}
+
+function analyzeWatchdogEvents(events: any[], nowMs: number, windowMs: number) {
+  const pseudoToolCalls = makeWindowCount();
+  const semanticToolFailures = makeWindowCount();
+  const retries = makeWindowCount();
+  const recoveries = makeWindowCount();
+  const suppressions = makeWindowCount();
+  const verifierErrors = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    switch (event?.type) {
+      case "pseudo_tool_call_detected":
+        bumpWindowCount(pseudoToolCalls, inRecentWindow);
+        break;
+      case "semantic_tool_failure_detected":
+        bumpWindowCount(semanticToolFailures, inRecentWindow);
+        break;
+      case "retry_triggered":
+        bumpWindowCount(retries, inRecentWindow);
+        break;
+      case "termination_recovery_triggered":
+        bumpWindowCount(recoveries, inRecentWindow);
+        break;
+      case "termination_recovery_suppressed":
+        bumpWindowCount(suppressions, inRecentWindow);
+        break;
+      case "verifier_error":
+      case "termination_verifier_error":
+        bumpWindowCount(verifierErrors, inRecentWindow);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const recentEvents = events
+    .filter((event) => [
+      "pseudo_tool_call_detected",
+      "semantic_tool_failure_detected",
+      "retry_triggered",
+      "termination_recovery_triggered",
+      "termination_recovery_suppressed",
+      "verifier_error",
+      "termination_verifier_error",
+    ].includes(event?.type))
+    .slice(-6)
+    .map((event) => {
+      const at = formatClock(event?.ts);
+      switch (event?.type) {
+        case "pseudo_tool_call_detected":
+          return `${at} pseudo-tool-call chars=${event?.assistantChars ?? "?"}`;
+        case "semantic_tool_failure_detected":
+          return `${at} semantic-tool-failure tool=${event?.toolName || "bash"}`;
+        case "retry_triggered":
+          return `${at} retry stall=${event?.stallKind || "unknown"} count=${event?.retryCount ?? "?"}`;
+        case "termination_recovery_triggered":
+          return `${at} recovery stop=${event?.stopReason || "unknown"} retry=${event?.retryCount ?? "?"}`;
+        case "termination_recovery_suppressed":
+          return `${at} suppressed reason=${event?.reason || "unknown"}`;
+        case "verifier_error":
+        case "termination_verifier_error":
+          return `${at} verifier-error ${truncate(String(event?.message || "unknown"), 80)}`;
+        default:
+          return `${at} ${event?.type || "unknown"}`;
+      }
+    });
+
+  return {
+    pseudoToolCalls,
+    semanticToolFailures,
+    retries,
+    recoveries,
+    suppressions,
+    verifierErrors,
+    recentEvents,
+  };
 }
 
 function isTerminationLike(stopReason: unknown, summary: string): boolean {
@@ -155,6 +285,11 @@ function hashText(input: string): string {
   return (hash >>> 0).toString(16);
 }
 
+function truncate(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
 function normalizeSummary(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -172,6 +307,60 @@ function isLikelyClosedResponse(text: string): boolean {
   if (/[.!?]["')\]]?\s*$/.test(normalized)) return true;
   if (/\b(complete|done|finished|summary)[:]?\s*$/i.test(normalized)) return true;
   return false;
+}
+
+function containsPseudoToolCallText(text: string): boolean {
+  const normalized = normalizeSummary(text).toLowerCase();
+  if (!normalized) return false;
+  const markers = [
+    "<tool_call>",
+    "</tool_call>",
+    "<function=",
+    "<function>",
+    "<parameter=command>",
+    "<parameter>",
+    "</function>",
+    "</parameter>",
+  ];
+  const hasMarkup = markers.some((marker) => normalized.includes(marker));
+  const hasPlanningLead =
+    normalized.includes("let me ") ||
+    normalized.includes("i'll ") ||
+    normalized.includes("i will ") ||
+    normalized.includes("now let me ");
+  return hasMarkup || (hasPlanningLead && (normalized.includes("<tool_call>") || normalized.includes("<function=")));
+}
+
+function isSemanticToolFailureText(text: string): boolean {
+  const normalized = normalizeSummary(text).toLowerCase();
+  if (!normalized) return false;
+  const signals = [
+    "[error]",
+    "status command failed",
+    "failed:",
+    "command not found",
+    "timed out",
+    "awaitable timed out",
+    "no such file or directory",
+    "permission denied",
+    "traceback (most recent call last)",
+    "error:",
+  ];
+  return signals.some((signal) => normalized.includes(signal));
+}
+
+function summarizeToolResult(result: any): string {
+  if (typeof result === "string") return result;
+  if (!result) return "";
+  if (typeof result.stdout === "string" && result.stdout.trim()) return result.stdout;
+  if (typeof result.stderr === "string" && result.stderr.trim()) return result.stderr;
+  if (typeof result.output === "string" && result.output.trim()) return result.output;
+  if (Array.isArray(result.content)) return extractText(result.content);
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return "";
+  }
 }
 
 function assessTerminationSummary(
@@ -256,6 +445,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function resolvePrimaryModelId(ctx: ExtensionContext): string {
+  const sessionModel = typeof ctx.model?.id === "string" ? ctx.model.id.trim() : "";
+  if (sessionModel) return sessionModel;
+  return ENV_PRIMARY_MODEL;
 }
 
 function parseDurationToMs(input: string): number | null {
@@ -398,6 +593,10 @@ function makeConfigFromEnv(): WatchdogConfig {
       process.env.PI_HEALTH_WATCHDOG_TERMINATION_COOLDOWN_MS,
       DEFAULT_CONFIG.terminationCooldownMs
     ),
+    suppressRecoveryOnAbort: parseBoolean(
+      process.env.PI_HEALTH_WATCHDOG_SUPPRESS_RECOVERY_ON_ABORT,
+      DEFAULT_CONFIG.suppressRecoveryOnAbort
+    ),
     traceFile: process.env.PI_HEALTH_WATCHDOG_TRACE_FILE || DEFAULT_CONFIG.traceFile,
   };
 }
@@ -451,9 +650,10 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     if (!ctx.hasUI) return;
     const t = ctx.ui.theme;
     const retries = t.fg("dim", ` r:${retryCount}/${config.maxRetries}`);
+    const resolvedVerifier = resolveVerifierModel(ctx)?.id || config.verifierModel || resolvePrimaryModelId(ctx) || "auto";
     ctx.ui.setStatus(
       "watchdog",
-      `${t.fg("dim", "watchdog:")}${t.fg("accent", "on")}${retries}${t.fg("dim", ` v:${config.verifierModel}`)}`
+      `${t.fg("dim", "watchdog:")}${t.fg("accent", "on")}${retries}${t.fg("dim", ` v:${resolvedVerifier}`)}`
     );
   }
 
@@ -617,12 +817,20 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   }
 
   function resolveVerifierModel(ctx: ExtensionContext): any {
-    return (
-      ctx.modelRegistry.find(config.verifierProvider, config.verifierModel) ||
-      ctx.modelRegistry.find(config.verifierProvider, PRIMARY_MODEL) ||
-      ctx.modelRegistry.find(config.verifierProvider, "unsloth/qwen3.5-27b") ||
-      null
-    );
+    const provider = config.verifierProvider || resolveActiveProvider(ctx);
+    const sc = getSidecarConfig(provider);
+    const lookupProvider = config.verifierProvider || resolveSidecarProvider(provider);
+    const primaryModelId = resolvePrimaryModelId(ctx);
+    const verifierModelId = sc.verifier || primaryModelId;
+    const candidates = [config.verifierModel, verifierModelId, primaryModelId]
+      .map((id) => (typeof id === "string" ? id.trim() : ""))
+      .filter((id, index, arr) => id.length > 0 && arr.indexOf(id) === index);
+
+    for (const id of candidates) {
+      const model = ctx.modelRegistry.find(lookupProvider, id);
+      if (model) return model;
+    }
+    return null;
   }
 
   /**
@@ -726,7 +934,6 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     const verificationPrompt = [
-      "/no_think",
       "You are a watchdog verifier deciding whether an LLM run is likely still progressing.",
       "Return strict JSON only: {\"decision\":\"wait\"|\"retry\",\"reason\":\"short\"}",
       "Conservative policy: choose wait when uncertain.",
@@ -757,10 +964,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
         config.verifierInactivityMs
       );
 
-      const text = response.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+      const { text } = extractResponseText(response, 2);
       const decision = parseVerifierDecision(text);
       if (decision === "wait") {
         trace("verifier_decision", { decision: "wait", modelId: model.id });
@@ -938,7 +1142,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     summary: string,
     priorAssistantChars = 0,
     priorAssistantAgeMs = -1,
-    priorAssistantClosed = false
+    priorAssistantClosed = false,
+    extras: Partial<Pick<TerminationCandidate, "kind" | "metadata">> = {}
   ): TerminationCandidate {
     const normalizedSummary = normalizeSummary(summary);
     const normalizedStopReason = typeof stopReason === "string" ? stopReason : "unknown";
@@ -954,6 +1159,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       priorAssistantClosed,
       detectedAt: Date.now(),
       signature,
+      kind: extras.kind,
+      metadata: extras.metadata,
     };
   }
 
@@ -994,7 +1201,6 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     const prompt = [
-      "/no_think",
       "You are a watchdog verifier deciding if an LLM answer was cut off and should be retried.",
       "Return strict JSON only: {\"decision\":\"wait\"|\"retry\",\"reason\":\"short\"}",
       "Conservative policy: choose wait if the answer appears complete.",
@@ -1030,10 +1236,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
         config.verifierInactivityMs
       );
 
-      const text = response.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+      const { text } = extractResponseText(response, 2);
       const decision = parseVerifierDecision(text);
       if (decision === "retry") {
         trace("termination_verifier_decision", { decision: "retry", modelId: model.id });
@@ -1067,6 +1270,23 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
         stopReason: candidate.stopReason,
       });
       return;
+    }
+
+    // Suppress recovery for user-initiated aborts.  When the stop reason is
+    // literally "aborted"/"abort"/"cancel"/"cancelled" it is almost always the
+    // user pressing Ctrl+C, not a model error.  Retrying in that case wastes
+    // context and re-triggers work the user explicitly stopped.
+    if (config.suppressRecoveryOnAbort) {
+      const userAbortReasons = ["aborted", "abort", "cancel", "cancelled"];
+      const lower = (candidate.stopReason || "").trim().toLowerCase();
+      if (userAbortReasons.includes(lower)) {
+        trace("termination_recovery_suppressed", {
+          reason: "likely_user_initiated_abort",
+          source,
+          stopReason: candidate.stopReason,
+        });
+        return;
+      }
     }
 
     if (latestUserPromptAt > candidate.detectedAt) {
@@ -1107,8 +1327,10 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       return;
     }
 
+    const forcedKinds = new Set(["pseudo_tool_call", "semantic_tool_failure"]);
     if (
       config.terminationRequireErrorStop &&
+      !forcedKinds.has(candidate.kind || "") &&
       !isErrorLikeStopReason(candidate.stopReason) &&
       !isTerminationLike(candidate.stopReason, candidate.summary)
     ) {
@@ -1122,7 +1344,10 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
 
     let shouldRetry = false;
     let decisionReason = "aggressive";
-    if (config.terminationMode === "aggressive") {
+    if (forcedKinds.has(candidate.kind || "")) {
+      shouldRetry = true;
+      decisionReason = candidate.kind || "forced_kind";
+    } else if (config.terminationMode === "aggressive") {
       shouldRetry = true;
     } else {
       if (looksLikePostCompletionTermination(candidate)) {
@@ -1273,6 +1498,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    const primaryModelId = resolvePrimaryModelId(ctx);
+    const verifierModel = resolveVerifierModel(ctx);
     touch();
     retryCount = 0;
     verifierUnavailableNotified = false;
@@ -1295,12 +1522,15 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     clearFinalTailTimer();
     trace("session_start", {
       verifyBeforeRetry: config.verifyBeforeRetry,
-      primaryModel: PRIMARY_MODEL,
+      primaryModel: primaryModelId || null,
+      activeProvider: config.verifierProvider || resolveActiveProvider(ctx),
       verifierModel: config.verifierModel,
+      verifierResolvedModel: verifierModel?.id || null,
       recoverOnTermination: config.recoverOnTermination,
       terminationMode: config.terminationMode,
       terminationMinCompleteChars: config.terminationMinCompleteChars,
       terminationVerifyAmbiguous: config.terminationVerifyAmbiguous,
+      suppressRecoveryOnAbort: config.suppressRecoveryOnAbort,
       writeSchemaWindowMs: WRITE_SCHEMA_WINDOW_MS,
       writeSchemaMaxBeforeGuard: WRITE_SCHEMA_MAX_BEFORE_GUARD,
       writeSchemaGuardCooldownMs: WRITE_SCHEMA_GUARD_COOLDOWN_MS,
@@ -1310,10 +1540,10 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     });
     scheduleCronJobs(ctx);
     setWatchdogStatus(ctx);
-    if (config.verifyBeforeRetry && !ctx.modelRegistry.find(config.verifierProvider, config.verifierModel)) {
+    if (config.verifyBeforeRetry && !verifierModel) {
       notify(
         ctx,
-        `Health watchdog verifier model missing (${config.verifierProvider}/${config.verifierModel}); fallback chain will be used.`,
+        `Health watchdog verifier model unavailable (${config.verifierProvider || "auto"}); retry verification will be skipped.`,
         "warning"
       );
     }
@@ -1697,6 +1927,57 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("watchdog", {
+    description: "Watchdog status and recent recovery diagnostics",
+    handler: async (args, ctx) => {
+      const mode = args.trim().toLowerCase() || "status";
+      const nowMs = Date.now();
+      const events = readRecentWatchdogEvents(config.traceFile, 600);
+      const stats = analyzeWatchdogEvents(events, nowMs, WATCHDOG_COMMAND_WINDOW_MS);
+      const verifierModel = resolveVerifierModel(ctx)?.id || config.verifierModel || resolvePrimaryModelId(ctx) || "unknown";
+
+      const summaryLines = [
+        `watchdog active=${agentRunning ? "yes" : "no"} turn=${turnRunning ? "running" : "idle"} tool=${toolRunning ? "running" : "idle"}`,
+        `retries=${retryCount}/${config.maxRetries} finalTail=${finalTailPending ? "pending" : "clear"} verifier=${verifierInFlight ? "running" : "idle"}`,
+        `verifierModel=${verifierModel} recoverOnTermination=${config.recoverOnTermination ? "on" : "off"}`,
+        `recent(${Math.round(WATCHDOG_COMMAND_WINDOW_MS / 60000)}m) pseudo=${stats.pseudoToolCalls.recent} semantic=${stats.semanticToolFailures.recent} retries=${stats.retries.recent} recoveries=${stats.recoveries.recent} suppressions=${stats.suppressions.recent}`,
+      ];
+
+      const recentLines = stats.recentEvents.length > 0
+        ? ["recent:", ...stats.recentEvents.map((line) => `- ${line}`)]
+        : ["recent: none"];
+
+      const verifyLines = [
+        `verifier model=${verifierModel}`,
+        `verifyBeforeRetry=${config.verifyBeforeRetry ? "on" : "off"}`,
+        `terminationVerifyAmbiguous=${config.terminationVerifyAmbiguous ? "on" : "off"}`,
+        `verifierInactivityMs=${config.verifierInactivityMs}`,
+        `recent verifierErrors=${stats.verifierErrors.recent} total=${stats.verifierErrors.total}`,
+      ];
+
+      let lines: string[];
+      if (mode === "status") {
+        lines = [...summaryLines, ...recentLines];
+      } else if (mode === "recent") {
+        lines = recentLines;
+      } else if (mode === "verify") {
+        lines = verifyLines;
+      } else if (mode === "help") {
+        lines = [
+          "Usage: /watchdog [status|recent|verify|help]",
+          "- status: current watchdog state + recent recovery counters",
+          "- recent: recent watchdog recovery/suppression events",
+          "- verify: verifier model and retry-gate settings",
+        ];
+      } else {
+        lines = ["Usage: /watchdog [status|recent|verify|help]"];
+      }
+
+      const level: "info" | "warning" = stats.pseudoToolCalls.recent > 0 || stats.semanticToolFailures.recent > 0 ? "warning" : "info";
+      notify(ctx, lines.join("\n"), level);
+    },
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
     if (!prompt) {
@@ -1845,6 +2126,35 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       handleWriteSchemaError(ctx, errorText, true);
     }
 
+    const toolSummary = summarizeToolResult(event?.result);
+    if (
+      !event?.isError &&
+      toolName === "bash" &&
+      isSemanticToolFailureText(`${errorText}\n${toolSummary}`) &&
+      activePrompt.trim()
+    ) {
+      const candidate = buildTerminationCandidate(
+        "error",
+        truncate(normalizeSummary(toolSummary || errorText), 700),
+        lastAssistantSummaryInTurn.length,
+        lastAssistantSummaryAt > 0 ? Date.now() - lastAssistantSummaryAt : -1,
+        isLikelyClosedResponse(lastAssistantSummaryInTurn),
+        {
+          kind: "semantic_tool_failure",
+          metadata: {
+            toolName,
+            errorText: truncate(errorText, 220),
+          },
+        }
+      );
+      pendingTermination = candidate;
+      trace("semantic_tool_failure_detected", {
+        toolName,
+        summary: candidate.summary,
+        stopReason: candidate.stopReason,
+      });
+    }
+
     touch();
   });
 
@@ -1900,6 +2210,24 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
           priorAssistantChars: candidate.priorAssistantChars,
           priorAssistantAgeMs: candidate.priorAssistantAgeMs,
           priorAssistantClosed: candidate.priorAssistantClosed,
+          signature: candidate.signature,
+        });
+      } else if (stopReason === "stop" && containsPseudoToolCallText(summary)) {
+        const now = Date.now();
+        const inTurnPriorChars = lastAssistantSummaryInTurn.length;
+        const inTurnPriorAgeMs = lastAssistantSummaryAt > 0 ? now - lastAssistantSummaryAt : -1;
+        const priorSummary = inTurnPriorChars > 0 ? lastAssistantSummaryInTurn : lastStableAssistantSummary;
+        const priorChars = inTurnPriorChars > 0 ? inTurnPriorChars : lastStableAssistantSummary.length;
+        const priorAgeMs = inTurnPriorChars > 0 ? inTurnPriorAgeMs : (lastStableAssistantAt > 0 ? now - lastStableAssistantAt : -1);
+        const priorClosed = isLikelyClosedResponse(priorSummary);
+        const candidate = buildTerminationCandidate("error", summary, priorChars, priorAgeMs, priorClosed, {
+          kind: "pseudo_tool_call",
+          metadata: { originalStopReason: stopReason },
+        });
+        pendingTermination = candidate;
+        trace("pseudo_tool_call_detected", {
+          assistantChars: candidate.assistantChars,
+          priorAssistantChars: candidate.priorAssistantChars,
           signature: candidate.signature,
         });
       } else {

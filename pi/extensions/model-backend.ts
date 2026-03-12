@@ -38,6 +38,32 @@ export interface ModelInfo {
   loadedContextLength: number | null;
   /** Max context length the model supports (from backend metadata) */
   maxContextLength: number | null;
+  /** Backend-reported model identifier/path when available */
+  resolvedModelId?: string | null;
+}
+
+export interface ModelCapabilities {
+  provider: string;
+  modelId: string;
+  modelName: string | null;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  reasoning: boolean;
+  reasoningFormat: string | null;
+  maxTokensField: string | null;
+  supportsStore: boolean | null;
+  supportsDeveloperRole: boolean | null;
+  supportsReasoningEffort: boolean | null;
+  parserProfile: "qwen-thinking" | "openai-completions" | "generic";
+  toolFidelityTier: "high" | "medium" | "low";
+  notes: string[];
+}
+
+export interface ResponseNormalization {
+  text: string;
+  source: "text" | "thinking" | "mixed" | "empty";
+  hasPseudoToolMarkup: boolean;
+  jsonCandidate: string | null;
 }
 
 export interface BackendStatus {
@@ -92,6 +118,23 @@ const PROBE_TIMEOUT_MS = parsePositiveInt(process.env.PI_MODEL_BACKEND_TIMEOUT_M
 
 const MODELS_JSON_PATH = path.join(homedir(), ".pi", "agent", "models.json");
 
+let _modelsJsonCache: any | null = null;
+let _modelsJsonCacheMtime = 0;
+
+function readModelsJsonDoc(): any {
+  try {
+    const stat = fs.statSync(MODELS_JSON_PATH);
+    const mtime = stat.mtimeMs;
+    if (_modelsJsonCache && mtime === _modelsJsonCacheMtime) return _modelsJsonCache;
+    const raw = fs.readFileSync(MODELS_JSON_PATH, "utf-8");
+    _modelsJsonCache = JSON.parse(raw);
+    _modelsJsonCacheMtime = mtime;
+    return _modelsJsonCache;
+  } catch {
+    return null;
+  }
+}
+
 /** Default sidecar model IDs when `sidecar` section is absent or missing a provider. */
 const DEFAULT_SIDECAR: SidecarConfig = {
   optimizer: "qwen3.5-9b",
@@ -113,8 +156,7 @@ function readSidecarMap(): Record<string, SidecarConfig> {
     const mtime = stat.mtimeMs;
     if (_sidecarCache && mtime === _sidecarCacheMtime) return _sidecarCache;
 
-    const raw = fs.readFileSync(MODELS_JSON_PATH, "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed = readModelsJsonDoc();
     const sidecar = parsed?.sidecar;
     if (!sidecar || typeof sidecar !== "object") {
       _sidecarCache = {};
@@ -183,6 +225,74 @@ export function resolveActiveProvider(ctx: { model?: { provider?: string } }): s
   const ctxProvider = typeof ctx.model?.provider === "string" ? ctx.model.provider.trim() : "";
   if (ctxProvider) return ctxProvider;
   return "lmstudio";
+}
+
+function getProviderModelRecord(provider: string, modelId: string): Record<string, any> | null {
+  const parsed = readModelsJsonDoc();
+  const providers = parsed?.providers;
+  if (!providers || typeof providers !== "object") return null;
+  const p = providers[provider];
+  if (!p || typeof p !== "object") return null;
+  const models = Array.isArray((p as any).models) ? (p as any).models : [];
+  for (const model of models) {
+    if (!model || typeof model !== "object") continue;
+    const id = typeof (model as any).id === "string" ? (model as any).id.trim() : "";
+    if (id && modelIdMatches(modelId, { id })) return model as Record<string, any>;
+  }
+  return null;
+}
+
+function parseNullableBool(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+
+export function getModelCapabilities(provider: string, modelId: string): ModelCapabilities | null {
+  if (!provider || !modelId) return null;
+  const model = getProviderModelRecord(provider, modelId);
+  if (!model) return null;
+
+  const compat = (model.compat && typeof model.compat === "object") ? model.compat as Record<string, unknown> : {};
+  const reasoning = Boolean(model.reasoning);
+  const reasoningFormat = typeof compat.thinkingFormat === "string" ? compat.thinkingFormat : null;
+
+  let parserProfile: ModelCapabilities["parserProfile"] = "generic";
+  if (reasoning && reasoningFormat === "qwen") parserProfile = "qwen-thinking";
+  else if (typeof model.api === "string" && model.api.includes("openai")) parserProfile = "openai-completions";
+
+  let toolFidelityTier: ModelCapabilities["toolFidelityTier"] = "medium";
+  const notes: string[] = [];
+  if (parserProfile === "qwen-thinking") {
+    toolFidelityTier = "medium";
+    notes.push("qwen thinking blocks may require text/thinking fallback parsing");
+  }
+  if (!reasoning) {
+    toolFidelityTier = "high";
+    notes.push("non-thinking output typically improves structured tool/JSON adherence");
+  }
+  if (typeof model.id === "string" && model.id.includes("gpt-oss")) {
+    toolFidelityTier = "high";
+    notes.push("gpt-oss harmony-style models generally provide strong tool schema adherence");
+  }
+  if (typeof model.id === "string" && model.id.includes("thinking")) {
+    notes.push("thinking-enabled model may spend budget before final answer");
+  }
+
+  return {
+    provider,
+    modelId: String(model.id || modelId),
+    modelName: typeof model.name === "string" ? model.name : null,
+    contextWindow: Number.isFinite(Number(model.contextWindow)) ? Math.floor(Number(model.contextWindow)) : null,
+    maxTokens: Number.isFinite(Number(model.maxTokens)) ? Math.floor(Number(model.maxTokens)) : null,
+    reasoning,
+    reasoningFormat,
+    maxTokensField: typeof compat.maxTokensField === "string" ? compat.maxTokensField : null,
+    supportsStore: parseNullableBool(compat.supportsStore),
+    supportsDeveloperRole: parseNullableBool(compat.supportsDeveloperRole),
+    supportsReasoningEffort: parseNullableBool(compat.supportsReasoningEffort),
+    parserProfile,
+    toolFidelityTier,
+    notes,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +386,7 @@ async function probeLmStudio(
         state: "not-found",
         loadedContextLength: null,
         maxContextLength: null,
+        resolvedModelId: null,
       };
     }
     const loaded = Number(row.loaded_context_length);
@@ -285,6 +396,7 @@ async function probeLmStudio(
       state: String(row.state || "unknown"),
       loadedContextLength: Number.isFinite(loaded) && loaded > 0 ? Math.floor(loaded) : null,
       maxContextLength: Number.isFinite(maxCtx) && maxCtx > 0 ? Math.floor(maxCtx) : null,
+      resolvedModelId: typeof row.id === "string" ? row.id : null,
     };
   } catch {
     return null;
@@ -332,6 +444,7 @@ async function probeLlamaBarn(
         state: "not-found",
         loadedContextLength: null,
         maxContextLength: null,
+        resolvedModelId: null,
       };
     }
 
@@ -346,6 +459,7 @@ async function probeLlamaBarn(
       state: statusValue,
       loadedContextLength: statusValue === "loaded" ? ctxFromArgs : null,
       maxContextLength: ctxFromArgs,
+      resolvedModelId: typeof row.id === "string" ? row.id : null,
     };
   } catch {
     return null;
@@ -414,6 +528,7 @@ async function probeLlamaCpp(
       state,
       loadedContextLength: state === "loaded" ? loadedCtx : null,
       maxContextLength: loadedCtx,
+      resolvedModelId: modelId || null,
     };
   } catch {
     return null;
@@ -454,11 +569,13 @@ async function probeMlx(
         state: status,
         loadedContextLength: null,
         maxContextLength: null,
+        resolvedModelId: null,
       };
     }
 
     // Check /v1/models for the requested model
     let modelFound = false;
+    let resolvedModelId: string | null = null;
     try {
       const modelsRes = await fetch(MLX_PRIMARY_MODELS_URL, { signal: controller.signal });
       if (modelsRes.ok) {
@@ -467,7 +584,17 @@ async function probeMlx(
         // MLX model IDs are like "mlx-community/Qwen3.5-35B-A3B-4bit"
         // Our model IDs are like "qwen3.5-35b-a3b"
         // Use case-insensitive substring matching on the model name portion
-        modelFound = rows.some((r) => mlxModelIdMatches(modelId, String(r.id || "")));
+        for (const row of rows) {
+          const candidate = String(row.id || "");
+          if (mlxModelIdMatches(modelId, candidate)) {
+            modelFound = true;
+            resolvedModelId = candidate;
+            break;
+          }
+        }
+        if (!resolvedModelId && rows.length > 0 && typeof rows[0]?.id === "string") {
+          resolvedModelId = String(rows[0].id);
+        }
       }
     } catch { /* models endpoint query optional */ }
 
@@ -478,6 +605,7 @@ async function probeMlx(
       // so the doctor command won't emit a context mismatch warning
       loadedContextLength: null,
       maxContextLength: null,
+      resolvedModelId,
     };
   } catch {
     return null;
@@ -519,6 +647,14 @@ function mlxModelIdMatches(wantedId: string, mlxId: string): boolean {
   return wantedName === mlxBase || wantedName === mlxName;
 }
 
+export function inferModelSource(modelInfo: ModelInfo): "local-path" | "repo-or-cache" | "unknown" {
+  const raw = typeof modelInfo?.resolvedModelId === "string" ? modelInfo.resolvedModelId.trim() : "";
+  if (!raw) return "unknown";
+  if (raw.startsWith("/")) return "local-path";
+  if (raw.includes("/") || raw.includes("--")) return "repo-or-cache";
+  return "unknown";
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -537,6 +673,7 @@ export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
     state: "unavailable",
     loadedContextLength: null,
     maxContextLength: null,
+    resolvedModelId: null,
   };
   if (!modelId) return fallback;
 
@@ -626,6 +763,128 @@ export async function fetchModelInfoAll(modelId: string): Promise<ModelInfo[]> {
 // Response text extraction with thinking-block fallback
 // ---------------------------------------------------------------------------
 
+export function containsPseudoToolCallMarkup(text: string): boolean {
+  const normalized = String(text || "").toLowerCase();
+  if (!normalized) return false;
+  const markers = [
+    "<tool_call>",
+    "</tool_call>",
+    "<function=",
+    "<function>",
+    "<parameter=",
+    "</function>",
+    "</parameter>",
+    "<tool>",
+    "</tool>",
+  ];
+  return markers.some((m) => normalized.includes(m));
+}
+
+export function stripThinkingTags(text: string): string {
+  const input = String(text || "");
+  const stripped = input.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (stripped) return stripped;
+  return input.replace(/<\/?think>/gi, "").trim();
+}
+
+export function stripMarkdownCodeFences(text: string): string {
+  const input = String(text || "").trim();
+  if (!input) return "";
+  return input.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
+export function extractFirstJsonObjectCandidate(text: string): string | null {
+  const input = String(text || "");
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === "}") {
+      if (depth > 0) depth -= 1;
+      if (depth === 0 && start >= 0) {
+        return input.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function normalizeResponseText(
+  response: { content?: any[] } | any,
+  minLength: number = 10,
+): ResponseNormalization {
+  const content: any[] = response?.content ?? [];
+
+  const textContent = content
+    .filter((c: any) => c?.type === "text")
+    .map((c: any) => c?.text ?? "")
+    .join("\n")
+    .trim();
+
+  const thinkingRaw = content
+    .filter((c: any) => c?.type === "thinking")
+    .map((c: any) => c?.thinking || c?.text || "")
+    .join("\n")
+    .trim();
+
+  const thinkingContent = stripThinkingTags(thinkingRaw);
+
+  let chosen = "";
+  let source: ResponseNormalization["source"] = "empty";
+
+  if (textContent && textContent.length >= minLength) {
+    chosen = textContent;
+    source = "text";
+  }
+
+  if ((!chosen || chosen.length < minLength) && thinkingContent && thinkingContent.length >= minLength) {
+    chosen = thinkingContent;
+    source = "thinking";
+  }
+
+  if (textContent && textContent.length >= minLength && thinkingContent && thinkingContent.length >= minLength) {
+    source = "mixed";
+  }
+
+  const cleaned = stripMarkdownCodeFences(chosen);
+  const jsonCandidate = extractFirstJsonObjectCandidate(cleaned);
+  const hasPseudoToolMarkup = containsPseudoToolCallMarkup(chosen);
+
+  return {
+    text: cleaned || chosen || textContent || thinkingContent || "",
+    source,
+    hasPseudoToolMarkup,
+    jsonCandidate,
+  };
+}
+
 /**
  * Extract usable text from a Pi model response's content blocks.
  *
@@ -645,43 +904,10 @@ export function extractResponseText(
   response: { content?: any[] } | any,
   minLength: number = 10,
 ): { text: string; source: "text" | "thinking" | "empty" } {
-  const content: any[] = response?.content ?? [];
-
-  // 1) Normal path: join all text-type blocks
-  const textContent = content
-    .filter((c: any) => c.type === "text")
-    .map((c: any) => c.text ?? "")
-    .join("\n")
-    .trim();
-
-  if (textContent && textContent.length >= minLength) {
-    return { text: textContent, source: "text" };
-  }
-
-  // 2) Thinking fallback: join all thinking-type blocks
-  const thinkingRaw = content
-    .filter((c: any) => c.type === "thinking")
-    .map((c: any) => c.thinking || c.text || "")
-    .join("\n")
-    .trim();
-
-  if (!thinkingRaw || thinkingRaw.length < minLength) {
-    return { text: textContent || thinkingRaw || "", source: "empty" };
-  }
-
-  // Strip <think>…</think> wrappers (both greedy blocks and lone tags)
-  const stripped =
-    thinkingRaw
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim() ||
-    thinkingRaw.replace(/<\/?think>/gi, "").trim();
-
-  if (stripped && stripped.length >= minLength) {
-    return { text: stripped, source: "thinking" };
-  }
-
-  // If stripping removed too much, return the raw thinking content
-  return { text: thinkingRaw, source: "thinking" };
+  const normalized = normalizeResponseText(response, minLength);
+  if (normalized.source === "thinking") return { text: normalized.text, source: "thinking" };
+  if (normalized.source === "text" || normalized.source === "mixed") return { text: normalized.text, source: "text" };
+  return { text: normalized.text, source: "empty" };
 }
 
 // No-op default export so Pi's extension loader doesn't reject this utility module.

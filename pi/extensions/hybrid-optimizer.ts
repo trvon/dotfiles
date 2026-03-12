@@ -83,7 +83,7 @@ const PROMPT_PREVIEW_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_PREVI
 const PROMPT_STATE_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_STATE_CHARS, 2400);
 const TRACE_FILE = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/hybrid-optimizer.jsonl`;
 
-const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.49);
+const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.75);
 let COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 128000);
 const COMPACTION_COOLDOWN_MS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_COOLDOWN_MS, 180000);
 const COMPACTION_SAFETY_HEADROOM_TOKENS = parsePositiveInt(
@@ -1038,6 +1038,8 @@ function buildSystemPromptPatch(
     "- Favor concise tool plans when possible, but switch to deeper reasoning for risky changes.",
     "- Treat memory hints as candidate evidence and verify against current files/tool output.",
     "- ALWAYS prefer YAMS search (yams search <query>) over find/ls for discovering files. Use YAMS results to guide targeted file reads.",
+    "- For diagnostics/health checks, avoid shell pipelines that mask failures (for example: `cmd 2>&1 | head`, `... | tail`, or pipes to formatting tools). Run the command directly first so the true exit status and full error are visible.",
+    "- If output is large, prefer tool-level truncation, follow-up reads, or a second targeted command instead of piping through `head`/`tail`.",
     profile === "research"
       ? "- For literature tasks, prioritize local repo evidence in code->papers->docs order before external prompts/skills lookups."
       : "- Keep tool usage minimal and targeted.",

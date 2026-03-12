@@ -2,13 +2,13 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { fetchModelInfoAll, getModelCapabilities, inferModelSource, resolveActiveProvider } from "./model-backend.ts";
+import type { ModelInfo } from "./model-backend.ts";
 
 const TRACE_FILE = process.env.PI_RUNTIME_TRACE_FILE || `${homedir()}/.pi/agent/runtime-trace.jsonl`;
 const TRACE_ENABLED = parseBoolean(process.env.PI_RUNTIME_TRACE_ENABLED, true);
 const MAX_TEXT = parsePositiveInt(process.env.PI_RUNTIME_TRACE_MAX_TEXT, 320);
-const PRIMARY_MODEL = process.env.PI_PRIMARY_MODEL || "unsloth/qwen3.5-35b-a3b";
-const LMSTUDIO_MODELS_URL = process.env.PI_LMSTUDIO_MODELS_URL || "http://localhost:1234/api/v0/models";
-const LMSTUDIO_MODELS_TIMEOUT_MS = parsePositiveInt(process.env.PI_LMSTUDIO_MODELS_TIMEOUT_MS, 2500);
+const ENV_PRIMARY_MODEL = (process.env.PI_PRIMARY_MODEL || "").trim();
 const DOCTOR_SIGNAL_WINDOW_MS = parsePositiveInt(process.env.PI_DOCTOR_SIGNAL_WINDOW_MS, 900_000);
 
 type TraceTarget = {
@@ -30,6 +30,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function resolvePrimaryModelId(ctx: ExtensionContext): string {
+  const sessionModel = typeof ctx.model?.id === "string" ? ctx.model.id.trim() : "";
+  if (sessionModel) return sessionModel;
+  return ENV_PRIMARY_MODEL;
 }
 
 function truncate(text: string, limit: number): string {
@@ -147,6 +153,239 @@ type SignalCounts = {
   terminations: number;
 };
 
+type WindowCount = {
+  recent: number;
+  total: number;
+};
+
+function makeWindowCount(): WindowCount {
+  return { recent: 0, total: 0 };
+}
+
+function bumpWindowCount(counter: WindowCount, inRecentWindow: boolean): void {
+  counter.total += 1;
+  if (inRecentWindow) counter.recent += 1;
+}
+
+function eventIsRecent(event: any, nowMs: number, windowMs: number): boolean {
+  const tsMs = typeof event?.ts === "string" ? Date.parse(event.ts) : NaN;
+  return Number.isFinite(tsMs) && nowMs - tsMs <= windowMs;
+}
+
+function formatClock(ts: unknown): string {
+  if (typeof ts !== "string") return "??:??:??";
+  const time = ts.split("T")[1] || "";
+  return time.replace("Z", "").slice(0, 8) || "??:??:??";
+}
+
+function lastEventTs(events: any[]): string | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (typeof events[i]?.ts === "string") return events[i].ts;
+  }
+  return null;
+}
+
+function analyzeWatchdogTrace(events: any[], nowMs: number, windowMs: number) {
+  const pseudoToolCalls = makeWindowCount();
+  const semanticToolFailures = makeWindowCount();
+  const retries = makeWindowCount();
+  const recoveries = makeWindowCount();
+  const suppressions = makeWindowCount();
+  const verifierErrors = makeWindowCount();
+  const finalTailTimeouts = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    switch (event?.type) {
+      case "pseudo_tool_call_detected":
+        bumpWindowCount(pseudoToolCalls, inRecentWindow);
+        break;
+      case "semantic_tool_failure_detected":
+        bumpWindowCount(semanticToolFailures, inRecentWindow);
+        break;
+      case "retry_triggered":
+        bumpWindowCount(retries, inRecentWindow);
+        break;
+      case "termination_recovery_triggered":
+        bumpWindowCount(recoveries, inRecentWindow);
+        break;
+      case "termination_recovery_suppressed":
+        bumpWindowCount(suppressions, inRecentWindow);
+        break;
+      case "verifier_error":
+      case "termination_verifier_error":
+        bumpWindowCount(verifierErrors, inRecentWindow);
+        break;
+      case "final_tail_timeout":
+        bumpWindowCount(finalTailTimeouts, inRecentWindow);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const significant = new Set([
+    "pseudo_tool_call_detected",
+    "semantic_tool_failure_detected",
+    "retry_triggered",
+    "termination_recovery_triggered",
+    "termination_recovery_suppressed",
+    "verifier_error",
+    "termination_verifier_error",
+    "final_tail_timeout",
+  ]);
+
+  const recentEvents = events
+    .filter((event) => significant.has(event?.type))
+    .slice(-6)
+    .map((event) => {
+      const at = formatClock(event?.ts);
+      switch (event?.type) {
+        case "pseudo_tool_call_detected":
+          return `${at} pseudo-tool-call chars=${event?.assistantChars ?? "?"}`;
+        case "semantic_tool_failure_detected":
+          return `${at} semantic-tool-failure tool=${event?.toolName || "bash"}`;
+        case "retry_triggered":
+          return `${at} retry stall=${event?.stallKind || "unknown"} count=${event?.retryCount ?? "?"}`;
+        case "termination_recovery_triggered":
+          return `${at} recovery stop=${event?.stopReason || "unknown"} retry=${event?.retryCount ?? "?"}`;
+        case "termination_recovery_suppressed":
+          return `${at} suppressed reason=${event?.reason || "unknown"}`;
+        case "verifier_error":
+        case "termination_verifier_error":
+          return `${at} verifier-error ${truncate(String(event?.message || "unknown"), 80)}`;
+        case "final_tail_timeout":
+          return `${at} final-tail-timeout source=${event?.source || "unknown"}`;
+        default:
+          return `${at} ${event?.type || "unknown"}`;
+      }
+    });
+
+  return {
+    pseudoToolCalls,
+    semanticToolFailures,
+    retries,
+    recoveries,
+    suppressions,
+    verifierErrors,
+    finalTailTimeouts,
+    recentEvents,
+    lastTs: lastEventTs(events),
+  };
+}
+
+function analyzeHybridTrace(events: any[], nowMs: number, windowMs: number) {
+  const parseFailures = makeWindowCount();
+  const fallbacks = makeWindowCount();
+  const contextWarnings = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    if (["optimizer_model_parse_failed", "oracle_parse_failed", "rlm_extractor_model_parse_failed"].includes(event?.type)) {
+      bumpWindowCount(parseFailures, inRecentWindow);
+    }
+    if (["optimizer_fallback", "rlm_extractor_fallback"].includes(event?.type)) {
+      bumpWindowCount(fallbacks, inRecentWindow);
+    }
+    if (["context_budget_warning", "context_window_override"].includes(event?.type)) {
+      bumpWindowCount(contextWarnings, inRecentWindow);
+    }
+  }
+
+  const recentEvents = events
+    .filter((event) => ["optimizer_model_parse_failed", "oracle_parse_failed", "optimizer_fallback", "context_budget_warning"].includes(event?.type))
+    .slice(-5)
+    .map((event) => `${formatClock(event?.ts)} ${event?.type}`);
+
+  return { parseFailures, fallbacks, contextWarnings, recentEvents, lastTs: lastEventTs(events) };
+}
+
+function analyzeResearchTrace(events: any[], nowMs: number, windowMs: number) {
+  const autoInjected = makeWindowCount();
+  const gatherFailures = makeWindowCount();
+  const autoErrors = makeWindowCount();
+  const criticFallbacks = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    if (event?.type === "research_auto_injected") bumpWindowCount(autoInjected, inRecentWindow);
+    if (event?.type === "research_auto_gather_failed") bumpWindowCount(gatherFailures, inRecentWindow);
+    if (event?.type === "research_auto_error") bumpWindowCount(autoErrors, inRecentWindow);
+    if (event?.type === "critic_parse_fallback") bumpWindowCount(criticFallbacks, inRecentWindow);
+  }
+
+  const recentEvents = events
+    .filter((event) => ["research_auto_injected", "research_auto_gather_failed", "research_auto_error", "critic_parse_fallback"].includes(event?.type))
+    .slice(-5)
+    .map((event) => `${formatClock(event?.ts)} ${event?.type}`);
+
+  return { autoInjected, gatherFailures, autoErrors, criticFallbacks, recentEvents, lastTs: lastEventTs(events) };
+}
+
+function analyzeCompactionTrace(events: any[], nowMs: number, windowMs: number) {
+  const failures = makeWindowCount();
+  const fallbacks = makeWindowCount();
+  const retries = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    if (["compaction_9b_failed", "compaction_dcs_failed", "compaction_9b_retry_failed"].includes(event?.type)) {
+      bumpWindowCount(failures, inRecentWindow);
+    }
+    if (["compaction_heuristic_fallback", "safe_compaction_used"].includes(event?.type)) {
+      bumpWindowCount(fallbacks, inRecentWindow);
+    }
+    if (["compaction_9b_retry_attempt", "compaction_9b_retry_success"].includes(event?.type)) {
+      bumpWindowCount(retries, inRecentWindow);
+    }
+  }
+
+  const recentEvents = events
+    .filter((event) => ["compaction_9b_failed", "compaction_heuristic_fallback", "compaction_9b_retry_failed"].includes(event?.type))
+    .slice(-5)
+    .map((event) => `${formatClock(event?.ts)} ${event?.type}`);
+
+  return { failures, fallbacks, retries, recentEvents, lastTs: lastEventTs(events) };
+}
+
+function analyzeStreamTrace(events: any[], nowMs: number, windowMs: number) {
+  const recoveries = makeWindowCount();
+  const sendErrors = makeWindowCount();
+  const activeStreamEnds = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    if (event?.type === "recovery_persisted") bumpWindowCount(recoveries, inRecentWindow);
+    if (event?.type === "recovery_send_error") bumpWindowCount(sendErrors, inRecentWindow);
+    if (event?.type === "agent_end_active_stream") bumpWindowCount(activeStreamEnds, inRecentWindow);
+  }
+
+  const recentEvents = events
+    .filter((event) => ["recovery_persisted", "recovery_send_error", "agent_end_active_stream"].includes(event?.type))
+    .slice(-5)
+    .map((event) => `${formatClock(event?.ts)} ${event?.type}`);
+
+  return { recoveries, sendErrors, activeStreamEnds, recentEvents, lastTs: lastEventTs(events) };
+}
+
+function analyzeToolingPatterns(events: any[], nowMs: number, windowMs: number) {
+  const maskedPipelines = makeWindowCount();
+  const samples: string[] = [];
+
+  for (const event of events) {
+    if (event?.type !== "tool_start" || event?.toolName !== "bash") continue;
+    const args = String(event?.args || "");
+    const lower = args.toLowerCase();
+    const masked = lower.includes("| head") || lower.includes("| tail");
+    if (!masked) continue;
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    bumpWindowCount(maskedPipelines, inRecentWindow);
+    if (samples.length < 4) samples.push(`${formatClock(event?.ts)} ${truncate(args, 120)}`);
+  }
+
+  return { maskedPipelines, samples };
+}
+
 function analyzeRuntimeSignals(
   events: any[],
   nowMs: number,
@@ -183,27 +422,9 @@ function analyzeRuntimeSignals(
   return { recent, total };
 }
 
-async function fetchLoadedModelInfo(modelId: string): Promise<{ loadedContextLength: number | null; state: string }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LMSTUDIO_MODELS_TIMEOUT_MS);
-  try {
-    const response = await fetch(LMSTUDIO_MODELS_URL, { signal: controller.signal });
-    if (!response.ok) return { loadedContextLength: null, state: "unavailable" };
-    const data = (await response.json()) as any;
-    const rows = Array.isArray(data?.data) ? data.data : [];
-    const row = rows.find((entry: any) => entry && typeof entry.id === "string" && entry.id === modelId);
-    if (!row) return { loadedContextLength: null, state: "not-found" };
-    const loaded = Number(row.loaded_context_length);
-    const loadedContextLength = Number.isFinite(loaded) && loaded > 0 ? Math.floor(loaded) : null;
-    return { loadedContextLength, state: String(row.state || "unknown") };
-  } catch {
-    return { loadedContextLength: null, state: "unavailable" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 const MESSAGE_UPDATE_TRACE_INTERVAL = parsePositiveInt(process.env.PI_RUNTIME_TRACE_UPDATE_INTERVAL, 50);
+const TPS_STATUS_KEY = "tps";
+const TPS_UPDATE_INTERVAL_MS = 500; // Update status bar at ~2Hz during streaming
 
 export default function runtimeTraceExtension(pi: ExtensionAPI): void {
   // State for tracking assistant streaming in-progress (observability gap fix).
@@ -212,11 +433,35 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
   let assistantStreamBufferedChars = 0;
   let assistantStreamStartedAt = 0;
 
+  // State for tok/s measurement
+  let turnStartedAt = 0;            // When the turn began (for prompt eval timing)
+  let firstTokenAt = 0;             // When the first text/thinking delta arrived
+  let genTokenCount = 0;            // Approximate token count from deltas during generation
+  let lastTpsUpdateAt = 0;          // Last time we updated the status bar
+  let tpsCtx: ExtensionContext | null = null; // Cached context ref for status updates
+
   function resetStreamState(): void {
     assistantStreamActive = false;
     assistantStreamUpdateCount = 0;
     assistantStreamBufferedChars = 0;
     assistantStreamStartedAt = 0;
+  }
+
+  function resetTpsState(): void {
+    turnStartedAt = 0;
+    firstTokenAt = 0;
+    genTokenCount = 0;
+    lastTpsUpdateAt = 0;
+  }
+
+  function formatTps(tokensPerSec: number): string {
+    if (tokensPerSec >= 100) return `${Math.round(tokensPerSec)} t/s`;
+    if (tokensPerSec >= 10) return `${tokensPerSec.toFixed(1)} t/s`;
+    return `${tokensPerSec.toFixed(2)} t/s`;
+  }
+
+  function updateTpsStatus(ctx: ExtensionContext, text: string): void {
+    if (ctx.hasUI) ctx.ui.setStatus(TPS_STATUS_KEY, text);
   }
 
   async function handleTraceStatus(ctx: ExtensionContext): Promise<void> {
@@ -248,9 +493,228 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) ctx.ui.notify(`trace mark: ${label}`);
   }
 
+  async function handleDoctor(args: string, ctx: ExtensionContext): Promise<void> {
+    const mode = args.trim().toLowerCase() || "status";
+    const targets = getTraceTargets();
+    const status = buildTraceStatusSummary(targets);
+    const targetMap = new Map(targets.map((target) => [target.name, target.path]));
+    const nowMs = Date.now();
+    const runtimeEvents = readRecentTraceEvents(TRACE_FILE, 900);
+    const signals = analyzeRuntimeSignals(runtimeEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const primaryModelId = resolvePrimaryModelId(ctx);
+    const configuredContext = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
+
+    const allInfo = await fetchModelInfoAll(primaryModelId);
+    const loaded: ModelInfo = allInfo.find((i) => i.state === "loaded")
+      || allInfo[0]
+      || { backend: "unknown", state: "unavailable", loadedContextLength: null, maxContextLength: null };
+    const activeProvider = resolveActiveProvider(ctx);
+    const modelCheck = Boolean(primaryModelId && ctx.modelRegistry.find(activeProvider, primaryModelId));
+    const capabilities = primaryModelId ? getModelCapabilities(activeProvider, primaryModelId) : null;
+    const modelSource = inferModelSource(loaded);
+
+    const watchdogEvents = readRecentTraceEvents(targetMap.get("watchdog") || "", 600);
+    const hybridEvents = readRecentTraceEvents(targetMap.get("hybrid") || "", 600);
+    const researchEvents = readRecentTraceEvents(targetMap.get("research") || "", 600);
+    const compactionEvents = readRecentTraceEvents(targetMap.get("compaction") || "", 600);
+    const streamEvents = readRecentTraceEvents(targetMap.get("stream-saver") || "", 600);
+
+    const watchdog = analyzeWatchdogTrace(watchdogEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const hybrid = analyzeHybridTrace(hybridEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const research = analyzeResearchTrace(researchEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const compaction = analyzeCompactionTrace(compactionEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const stream = analyzeStreamTrace(streamEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const tooling = analyzeToolingPatterns(runtimeEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+
+    const backendLines = allInfo.map(
+      (info) =>
+        `${info.backend} state=${info.state} loadedContext=${info.loadedContextLength ?? "unknown"} configuredContext=${configuredContext ?? "unknown"}`
+    );
+    if (backendLines.length === 0) {
+      backendLines.push(`backend state=unavailable loadedContext=unknown configuredContext=${configuredContext ?? "unknown"}`);
+    }
+
+    const hasContextMismatch =
+      Boolean(configuredContext) &&
+      Boolean(loaded.loadedContextLength) &&
+      Number(loaded.loadedContextLength) > 0 &&
+      Number(loaded.loadedContextLength) < Number(configuredContext);
+
+    const warnings: string[] = [];
+    if (hasContextMismatch) {
+      warnings.push(`context mismatch configured=${configuredContext?.toLocaleString()} loaded=${loaded.loadedContextLength?.toLocaleString()}`);
+    }
+    if (watchdog.pseudoToolCalls.recent > 0) warnings.push(`pseudo tool-call stops detected (${watchdog.pseudoToolCalls.recent} recent)`);
+    if (watchdog.semanticToolFailures.recent > 0) warnings.push(`semantic bash failures detected (${watchdog.semanticToolFailures.recent} recent)`);
+    if (tooling.maskedPipelines.recent > 0) warnings.push(`masked bash pipelines detected (${tooling.maskedPipelines.recent} recent)`);
+    if (signals.recent.writeSchemaErrors >= 2) warnings.push(`write schema errors elevated (${signals.recent.writeSchemaErrors} recent)`);
+    if (signals.recent.lengthStops >= 3) warnings.push(`length stops elevated (${signals.recent.lengthStops} recent)`);
+    if (hybrid.parseFailures.recent > 0) warnings.push(`hybrid parse failures detected (${hybrid.parseFailures.recent} recent)`);
+    if (research.gatherFailures.recent > 0 || research.autoErrors.recent > 0) warnings.push("research auto pipeline has recent failures");
+    if (capabilities && capabilities.toolFidelityTier === "low") warnings.push("model capability reports low tool-fidelity tier");
+    if (capabilities && capabilities.reasoning && capabilities.reasoningFormat === "qwen") warnings.push("qwen thinking format active: ensure thinking fallback parsers remain healthy");
+
+    const traceFreshness = targets
+      .filter((target) => target.enabled)
+      .map((target) => {
+        const events = readRecentTraceEvents(target.path, 5);
+        return `${target.name} last=${lastEventTs(events) ? formatClock(lastEventTs(events)) : "none"} size=${status.sizes[target.name] ?? 0}B`;
+      });
+
+    const summaryLines = [
+      `doctor model=${ctx.model?.id || "unknown"}`,
+      `primary=${primaryModelId || "unknown"} registry=${modelCheck ? "ok" : "missing"}`,
+      `modelSource=${modelSource} backendModel=${loaded.resolvedModelId || "unknown"}`,
+      `capability parser=${capabilities?.parserProfile || "unknown"} toolTier=${capabilities?.toolFidelityTier || "unknown"} reasoning=${capabilities ? (capabilities.reasoning ? "on" : "off") : "unknown"}`,
+      ...backendLines,
+      `runtime recent(${Math.round(DOCTOR_SIGNAL_WINDOW_MS / 60000)}m) lengthStops=${signals.recent.lengthStops} writeSchemaErrors=${signals.recent.writeSchemaErrors} terminations=${signals.recent.terminations}`,
+      `watchdog recent pseudo=${watchdog.pseudoToolCalls.recent} semantic=${watchdog.semanticToolFailures.recent} retries=${watchdog.retries.recent} recoveries=${watchdog.recoveries.recent} suppressions=${watchdog.suppressions.recent}`,
+      `hybrid recent parseFailures=${hybrid.parseFailures.recent} fallbacks=${hybrid.fallbacks.recent} contextWarnings=${hybrid.contextWarnings.recent}`,
+      `research recent injected=${research.autoInjected.recent} gatherFailures=${research.gatherFailures.recent} autoErrors=${research.autoErrors.recent}`,
+      `compaction recent failures=${compaction.failures.recent} fallbacks=${compaction.fallbacks.recent} retries=${compaction.retries.recent}`,
+      `stream recent recoveries=${stream.recoveries.recent} sendErrors=${stream.sendErrors.recent} activeEnds=${stream.activeStreamEnds.recent}`,
+      `tooling recent maskedPipelines=${tooling.maskedPipelines.recent}`,
+      warnings.length > 0 ? `warnings ${warnings.join(" | ")}` : "warnings none",
+      status.message,
+    ];
+
+    const watchdogSection = [
+      "[watchdog]",
+      `pseudo recent=${watchdog.pseudoToolCalls.recent} total=${watchdog.pseudoToolCalls.total}`,
+      `semantic recent=${watchdog.semanticToolFailures.recent} total=${watchdog.semanticToolFailures.total}`,
+      `retries recent=${watchdog.retries.recent} total=${watchdog.retries.total}`,
+      `recoveries recent=${watchdog.recoveries.recent} total=${watchdog.recoveries.total}`,
+      `suppressions recent=${watchdog.suppressions.recent} total=${watchdog.suppressions.total}`,
+      `verifierErrors recent=${watchdog.verifierErrors.recent} total=${watchdog.verifierErrors.total}`,
+      ...(watchdog.recentEvents.length > 0 ? ["recent:", ...watchdog.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+    ];
+
+    const modelSection = [
+      "[model]",
+      `session=${ctx.model?.id || "unknown"}`,
+      `primary=${primaryModelId || "unknown"}`,
+      `provider=${activeProvider}`,
+      `registry=${modelCheck ? "ok" : "missing"}`,
+      `source=${modelSource}`,
+      `backendModelId=${loaded.resolvedModelId || "unknown"}`,
+      `parserProfile=${capabilities?.parserProfile || "unknown"}`,
+      `toolTier=${capabilities?.toolFidelityTier || "unknown"}`,
+      `reasoning=${capabilities ? (capabilities.reasoning ? "on" : "off") : "unknown"}${capabilities?.reasoningFormat ? ` (${capabilities.reasoningFormat})` : ""}`,
+      ...backendLines,
+      `toolFidelityRisk=${watchdog.pseudoToolCalls.recent > 0 || watchdog.semanticToolFailures.recent > 0 ? "elevated" : "normal"}`,
+      ...(capabilities?.notes?.length ? [`capabilityNotes=${capabilities.notes.join(" | ")}`] : []),
+      ...(hasContextMismatch ? [`warning configured=${configuredContext} loaded=${loaded.loadedContextLength}`] : []),
+    ];
+
+    const tracesSection = [
+      "[traces]",
+      ...traceFreshness,
+      status.message,
+      ...(tooling.samples.length > 0 ? ["masked pipeline samples:", ...tooling.samples.map((line) => `- ${line}`)] : ["masked pipeline samples: none"]),
+    ];
+
+    const allSection = [
+      ...summaryLines,
+      "",
+      ...watchdogSection,
+      "",
+      "[hybrid]",
+      `parseFailures recent=${hybrid.parseFailures.recent} total=${hybrid.parseFailures.total}`,
+      `fallbacks recent=${hybrid.fallbacks.recent} total=${hybrid.fallbacks.total}`,
+      `contextWarnings recent=${hybrid.contextWarnings.recent} total=${hybrid.contextWarnings.total}`,
+      ...(hybrid.recentEvents.length > 0 ? ["recent:", ...hybrid.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+      "",
+      "[research]",
+      `injected recent=${research.autoInjected.recent} total=${research.autoInjected.total}`,
+      `gatherFailures recent=${research.gatherFailures.recent} total=${research.gatherFailures.total}`,
+      `autoErrors recent=${research.autoErrors.recent} total=${research.autoErrors.total}`,
+      `criticFallbacks recent=${research.criticFallbacks.recent} total=${research.criticFallbacks.total}`,
+      ...(research.recentEvents.length > 0 ? ["recent:", ...research.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+      "",
+      "[compaction]",
+      `failures recent=${compaction.failures.recent} total=${compaction.failures.total}`,
+      `fallbacks recent=${compaction.fallbacks.recent} total=${compaction.fallbacks.total}`,
+      `retries recent=${compaction.retries.recent} total=${compaction.retries.total}`,
+      ...(compaction.recentEvents.length > 0 ? ["recent:", ...compaction.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+      "",
+      "[stream]",
+      `recoveries recent=${stream.recoveries.recent} total=${stream.recoveries.total}`,
+      `sendErrors recent=${stream.sendErrors.recent} total=${stream.sendErrors.total}`,
+      `activeEnds recent=${stream.activeStreamEnds.recent} total=${stream.activeStreamEnds.total}`,
+      ...(stream.recentEvents.length > 0 ? ["recent:", ...stream.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+      "",
+      ...modelSection,
+      "",
+      ...tracesSection,
+    ];
+
+    const payload = {
+      model: ctx.model?.id || null,
+      primaryModel: primaryModelId || null,
+      provider: activeProvider,
+      registryHasPrimary: modelCheck,
+      modelSource,
+      backendModelId: loaded.resolvedModelId || null,
+      capabilities,
+      configuredContext,
+      loadedContext: loaded.loadedContextLength,
+      loadedState: loaded.state,
+      loadedBackend: loaded.backend,
+      backends: allInfo.map((i) => ({
+        backend: i.backend,
+        state: i.state,
+        loadedContext: i.loadedContextLength,
+        maxContext: i.maxContextLength,
+        resolvedModelId: i.resolvedModelId || null,
+      })),
+      signalWindowMs: DOCTOR_SIGNAL_WINDOW_MS,
+      runtimeSignals: signals,
+      watchdog,
+      hybrid,
+      research,
+      compaction,
+      stream,
+      tooling,
+      warnings,
+      traces: status.sizes,
+    };
+
+    let lines: string[];
+    if (mode === "status" || mode === "summary") {
+      lines = summaryLines;
+    } else if (mode === "all") {
+      lines = allSection;
+    } else if (mode === "watchdog") {
+      lines = watchdogSection;
+    } else if (mode === "model") {
+      lines = modelSection;
+    } else if (mode === "traces") {
+      lines = tracesSection;
+    } else if (mode === "json") {
+      lines = [JSON.stringify(payload, null, 2)];
+    } else if (mode === "help") {
+      lines = [
+        "Usage: /doctor [status|all|watchdog|model|traces|json|help]",
+        "- status: umbrella diagnostics summary",
+        "- all: detailed multi-extension diagnostics",
+        "- watchdog: watchdog-specific signals and recent events",
+        "- model: backend/model/context/tool-fidelity view",
+        "- traces: trace freshness, sizes, and masked-pipeline hints",
+        "- json: machine-readable diagnostics payload",
+      ];
+    } else {
+      lines = ["Usage: /doctor [status|all|watchdog|model|traces|json|help]"];
+    }
+
+    const level: "info" | "warning" = warnings.length > 0 ? "warning" : "info";
+    if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), level);
+    writeTrace("doctor", { mode, ...payload });
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.hasUI) {
       ctx.ui.setStatus("runtime-trace", `trace:${TRACE_ENABLED ? "on" : "off"}`);
+      ctx.ui.setStatus(TPS_STATUS_KEY, undefined); // Clear until first generation
       ctx.ui.notify(`Runtime trace ${TRACE_ENABLED ? "active" : "disabled"}.`);
     }
     writeTrace("session_start", {
@@ -298,57 +762,8 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("doctor", {
-    description: "Unified health diagnostics for custom extensions",
-    handler: async (_args, ctx) => {
-      const targets = getTraceTargets();
-      const status = buildTraceStatusSummary(targets);
-      const nowMs = Date.now();
-      const signals = analyzeRuntimeSignals(readRecentTraceEvents(TRACE_FILE, 900), nowMs, DOCTOR_SIGNAL_WINDOW_MS);
-      const configuredContext = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
-      const loaded = await fetchLoadedModelInfo(ctx.model?.id || PRIMARY_MODEL);
-      const modelCheck = Boolean(ctx.modelRegistry.find("lmstudio", PRIMARY_MODEL));
-
-      const lines = [
-        `doctor model=${ctx.model?.id || "unknown"}`,
-        `primary=${PRIMARY_MODEL} registry=${modelCheck ? "ok" : "missing"}`,
-        `lmstudio state=${loaded.state} loadedContext=${loaded.loadedContextLength ?? "unknown"} configuredContext=${configuredContext ?? "unknown"}`,
-        `signals recent(${Math.round(DOCTOR_SIGNAL_WINDOW_MS / 60000)}m) lengthStops=${signals.recent.lengthStops} writeSchemaErrors=${signals.recent.writeSchemaErrors} terminations=${signals.recent.terminations}`,
-        `signals total lengthStops=${signals.total.lengthStops} writeSchemaErrors=${signals.total.writeSchemaErrors} terminations=${signals.total.terminations}`,
-        status.message,
-      ];
-
-      if (
-        configuredContext &&
-        loaded.loadedContextLength &&
-        loaded.loadedContextLength > 0 &&
-        loaded.loadedContextLength < configuredContext
-      ) {
-        lines.push(
-          `warning context mismatch configured=${configuredContext.toLocaleString()} loaded=${loaded.loadedContextLength.toLocaleString()}`
-        );
-      }
-
-      const hasActiveSignalIssues = signals.recent.writeSchemaErrors >= 2 || signals.recent.lengthStops >= 3;
-      const hasContextMismatch =
-        Boolean(configuredContext) &&
-        Boolean(loaded.loadedContextLength) &&
-        Number(loaded.loadedContextLength) > 0 &&
-        Number(loaded.loadedContextLength) < Number(configuredContext);
-      const level: "info" | "warning" = hasActiveSignalIssues || hasContextMismatch ? "warning" : "info";
-
-      if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), level);
-      writeTrace("doctor", {
-        model: ctx.model?.id,
-        primaryModel: PRIMARY_MODEL,
-        registryHasPrimary: modelCheck,
-        configuredContext,
-        loadedContext: loaded.loadedContextLength,
-        loadedState: loaded.state,
-        signalWindowMs: DOCTOR_SIGNAL_WINDOW_MS,
-        signals,
-        traces: status.sizes,
-      });
-    },
+    description: "Unified health diagnostics for extensions and runtime",
+    handler: async (args, ctx) => handleDoctor(args, ctx),
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -366,23 +781,30 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
     resetStreamState();
   });
 
-  pi.on("turn_start", async (event) => {
+  pi.on("turn_start", async (event, ctx) => {
+    resetTpsState();
+    turnStartedAt = Date.now();
+    tpsCtx = ctx;
+    if (ctx.hasUI) updateTpsStatus(ctx, "...");
     writeTrace("turn_start", { turnIndex: event?.turnIndex });
   });
 
-  pi.on("turn_end", async (event) => {
+  pi.on("turn_end", async (event, ctx) => {
     const stopReason = event?.message?.stopReason;
     const toolResults = Array.isArray(event?.toolResults) ? event.toolResults.length : 0;
     const usage = event?.message?.usage?.totalTokens ?? null;
     writeTrace("turn_end", { turnIndex: event?.turnIndex, stopReason, toolResults, totalTokens: usage });
+    // Keep tpsCtx alive across tool-call turns (don't resetTpsState here —
+    // that's done at the next turn_start so the last turn's stats persist in the status bar).
   });
 
-  pi.on("message_start", async (event) => {
+  pi.on("message_start", async (event, ctx) => {
     const role = event?.message?.role || "unknown";
     if (role === "assistant") {
       resetStreamState();
       assistantStreamActive = true;
       assistantStreamStartedAt = Date.now();
+      tpsCtx = ctx;
     }
     writeTrace("message_start", { role });
   });
@@ -394,11 +816,38 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
 
     // Estimate buffered chars from the delta if available.
     const delta = event?.assistantMessageEvent;
+    let isTextDelta = false;
     if (delta && typeof delta === "object") {
       if (delta.type === "text_delta" && typeof delta.delta === "string") {
         assistantStreamBufferedChars += delta.delta.length;
+        isTextDelta = true;
       } else if (delta.type === "thinking_delta" && typeof delta.delta === "string") {
         assistantStreamBufferedChars += delta.delta.length;
+        isTextDelta = true;
+      }
+    }
+
+    // tok/s tracking: each text/thinking delta is ~1 token
+    if (isTextDelta) {
+      const now = Date.now();
+      if (firstTokenAt === 0) {
+        firstTokenAt = now;
+        // Show prompt eval latency
+        if (turnStartedAt > 0 && tpsCtx) {
+          const promptMs = firstTokenAt - turnStartedAt;
+          updateTpsStatus(tpsCtx, `pp ${promptMs}ms`);
+        }
+      }
+      genTokenCount += 1;
+
+      // Throttled status bar update during generation
+      if (now - lastTpsUpdateAt >= TPS_UPDATE_INTERVAL_MS && firstTokenAt > 0 && tpsCtx) {
+        lastTpsUpdateAt = now;
+        const genElapsedSec = (now - firstTokenAt) / 1000;
+        if (genElapsedSec > 0.1) {
+          const tps = genTokenCount / genElapsedSec;
+          updateTpsStatus(tpsCtx, `~${formatTps(tps)}`);
+        }
       }
     }
 
@@ -417,6 +866,36 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
     const role = message?.role || "unknown";
     const summary = summarizeMessage(message);
     const stopReason = message?.stopReason;
+
+    // Compute final tok/s using actual output token count from usage
+    let finalGenTps: number | null = null;
+    let finalPromptMs: number | null = null;
+    let genElapsedMs: number | null = null;
+    let outputTokens: number | null = null;
+
+    if (role === "assistant" && firstTokenAt > 0) {
+      const endTime = Date.now();
+      genElapsedMs = endTime - firstTokenAt;
+      finalPromptMs = turnStartedAt > 0 ? firstTokenAt - turnStartedAt : null;
+
+      // Prefer actual output token count from usage
+      outputTokens = message?.usage?.output ?? null;
+      const tokenCount = outputTokens ?? genTokenCount;
+
+      if (genElapsedMs > 0 && tokenCount > 0) {
+        finalGenTps = (tokenCount / genElapsedMs) * 1000;
+      }
+
+      // Update status bar with final precise reading
+      if (finalGenTps !== null && ctx.hasUI) {
+        const parts: string[] = [];
+        if (finalPromptMs !== null) parts.push(`pp ${finalPromptMs}ms`);
+        parts.push(formatTps(finalGenTps));
+        if (outputTokens !== null) parts.push(`${outputTokens}tok`);
+        updateTpsStatus(ctx, parts.join(" | "));
+      }
+    }
+
     writeTrace("message_end", {
       role,
       stopReason,
@@ -424,6 +903,10 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
       assistantStreamWasActive: role === "assistant" ? assistantStreamActive : undefined,
       assistantStreamUpdateCount: role === "assistant" ? assistantStreamUpdateCount : undefined,
       assistantStreamBufferedChars: role === "assistant" ? assistantStreamBufferedChars : undefined,
+      genTps: finalGenTps !== null ? Math.round(finalGenTps * 100) / 100 : undefined,
+      promptMs: finalPromptMs ?? undefined,
+      genElapsedMs: genElapsedMs ?? undefined,
+      outputTokens: outputTokens ?? undefined,
     });
 
     if (role === "assistant") {
@@ -471,7 +954,12 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     resetStreamState();
-    if (ctx?.hasUI) ctx.ui.setStatus("runtime-trace", undefined);
+    resetTpsState();
+    tpsCtx = null;
+    if (ctx?.hasUI) {
+      ctx.ui.setStatus("runtime-trace", undefined);
+      ctx.ui.setStatus(TPS_STATUS_KEY, undefined);
+    }
     writeTrace("session_shutdown");
   });
 }

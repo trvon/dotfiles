@@ -1,0 +1,20 @@
+services:
+  jan-openclaw:
+    image: openclaw-yams:local
+    container_name: jan-openclaw
+    restart: unless-stopped
+    user: root
+    ports:
+      - 127.0.0.1:18789:18789
+      - 127.0.0.1:18791:18791
+    pids_limit: 256
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=1g
+      - /home/node/.npm:rw,exec,nosuid,size=512m
+      - /home/node/.cache:rw,exec,nosuid,size=512m
+    volumes:
+      - ${HOME}/.openclaw/sandbox/docker:/home/node/.openclaw
+      - ${HOME}/research:/workspace/research
+      - ${HOME}/Documents/depend/dotfiles:/home/node/.openclaw/workspace

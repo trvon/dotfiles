@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildRecoveryContext,
   detectContinuityIssue,
+  shouldHeartbeatRefresh,
   shouldUseRecovery,
 } from "../src/continuity.mjs";
 
@@ -65,3 +66,19 @@ test("builds recovery context with prior prompt and partial output", () => {
   assert.match(text, /delivery target/i);
 });
 
+test("heartbeat refreshes stale sessions with prior RLM context", () => {
+  const session = {
+    lastRlmAt: 1_000,
+    lastActivityAt: 1_000,
+    lastRecoveryAt: 0,
+    lastQuery: "telegram delivery failure",
+    lastRawPrompt: "investigate telegram delivery failure",
+  };
+  const cfg = {
+    activityHeartbeatEnabled: true,
+    activityHeartbeatMs: 1_800_000,
+  };
+
+  assert.equal(shouldHeartbeatRefresh(session, cfg, 1_801_001), true);
+  assert.equal(shouldHeartbeatRefresh(session, cfg, 1_200_000), false);
+});

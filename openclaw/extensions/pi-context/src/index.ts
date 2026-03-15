@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { buildRecoveryContext, detectContinuityIssue, shouldUseRecovery } from "./continuity.mjs";
+import { buildRecoveryContext, detectContinuityIssue, shouldHeartbeatRefresh, shouldUseRecovery } from "./continuity.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +20,9 @@ const DEFAULTS = {
   continuityWatchdogEnabled: true,
   continuityMaxRetries: 1,
   continuityCooldownMs: 120000,
+  activityHeartbeatEnabled: true,
+  activityHeartbeatMs: 1800000,
+  activityHeartbeatPollMs: 300000,
   lmstudioBaseUrl: "http://host.docker.internal:1234/v1",
   sidecarModel: "qwen_qwen3.5-4b",
   dcsCli: "research-agent",
@@ -30,6 +33,7 @@ const RLM_MIN_SCORE = 0.003;
 const RLM_RETRIEVE_TIMEOUT_MS = 8000;
 const SIDECAR_QUERY_TIMEOUT_MS = 12000;
 const RLM_STORE_TIMEOUT_MS = 10000;
+const RLM_TEMPFILE_TTL_MS = 60000;
 
 type PluginApi = {
   config?: any;
@@ -42,6 +46,7 @@ type PluginApi = {
   on?: (event: string, handler: (payload: any) => any) => void;
   registerCommand?: (...args: any[]) => any;
   registerHook?: (...args: any[]) => any;
+  registerService?: (...args: any[]) => any;
 };
 
 type PluginConfig = {
@@ -57,6 +62,9 @@ type PluginConfig = {
   continuityWatchdogEnabled: boolean;
   continuityMaxRetries: number;
   continuityCooldownMs: number;
+  activityHeartbeatEnabled: boolean;
+  activityHeartbeatMs: number;
+  activityHeartbeatPollMs: number;
   lmstudioBaseUrl: string;
   sidecarModel: string;
   dcsCli: string;
@@ -76,6 +84,8 @@ type SessionState = {
   lastQuery: string;
   lastRawPrompt: string;
   lastHints: RlmHint[];
+  lastRlmAt: number;
+  lastActivityAt: number;
   retryCount: number;
   lastRecoveryAt: number;
   pendingRecovery: null | {
@@ -92,6 +102,20 @@ type MemoryChunk = {
   content: string;
 };
 
+class TempFileManager {
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+
+  register(tmpFile: string, ttlMs: number = RLM_TEMPFILE_TTL_MS): void {
+    const timer = setTimeout(() => {
+      fs.unlink(tmpFile).catch(() => undefined);
+      this.timers.delete(timer);
+    }, ttlMs);
+    this.timers.add(timer);
+  }
+}
+
+const rlmTempFileManager = new TempFileManager();
+
 function getPluginConfig(api: PluginApi): PluginConfig {
   const raw = api?.config?.plugins?.entries?.["pi-context"]?.config ?? {};
   return {
@@ -107,6 +131,9 @@ function getPluginConfig(api: PluginApi): PluginConfig {
     continuityWatchdogEnabled: raw.continuityWatchdogEnabled ?? DEFAULTS.continuityWatchdogEnabled,
     continuityMaxRetries: Number(raw.continuityMaxRetries ?? DEFAULTS.continuityMaxRetries),
     continuityCooldownMs: Number(raw.continuityCooldownMs ?? DEFAULTS.continuityCooldownMs),
+    activityHeartbeatEnabled: raw.activityHeartbeatEnabled ?? DEFAULTS.activityHeartbeatEnabled,
+    activityHeartbeatMs: Number(raw.activityHeartbeatMs ?? DEFAULTS.activityHeartbeatMs),
+    activityHeartbeatPollMs: Number(raw.activityHeartbeatPollMs ?? DEFAULTS.activityHeartbeatPollMs),
     lmstudioBaseUrl: String(raw.lmstudioBaseUrl ?? DEFAULTS.lmstudioBaseUrl),
     sidecarModel: String(raw.sidecarModel ?? DEFAULTS.sidecarModel),
     dcsCli: String(raw.dcsCli ?? DEFAULTS.dcsCli),
@@ -296,7 +323,7 @@ async function storeRlmChunk(cfg: PluginConfig, sessionTag: string, chunk: Memor
   if (!normalized) return false;
   await fs.writeFile(tmpFile, normalized, "utf8");
   const name = `openclaw-rlm-${Date.now().toString(36)}-${chunk.chunkType}-${index}`;
-  const metadata = `chunk_type=${chunk.chunkType},source=openclaw`;
+  const metadata = `chunk_type=${chunk.chunkType},source=openclaw,owner=pi-context,session_tag=${sessionTag}`;
   const tags = `rlm,pi-session-memory,${sessionTag}`;
   try {
     const result = await runYams(
@@ -321,11 +348,13 @@ async function storeRlmChunk(cfg: PluginConfig, sessionTag: string, chunk: Memor
         stderr: result.stderr,
         cwd: cfg.yamsCwd,
         chunkType: chunk.chunkType,
+        sessionTag,
+        name,
       });
     }
     return result.code === 0;
   } finally {
-    await fs.unlink(tmpFile).catch(() => undefined);
+    rlmTempFileManager.register(tmpFile);
   }
 }
 
@@ -531,6 +560,8 @@ export default function piContextPlugin(api: PluginApi): void {
       lastQuery: "",
       lastRawPrompt: "",
       lastHints: [],
+      lastRlmAt: 0,
+      lastActivityAt: 0,
       retryCount: 0,
       lastRecoveryAt: 0,
       pendingRecovery: null,
@@ -555,6 +586,10 @@ export default function piContextPlugin(api: PluginApi): void {
         `Tracked sessions: ${sessions.size}`,
         `Continuity watchdog: ${cfg.continuityWatchdogEnabled}`,
         `Continuity retries used: ${session.retryCount}/${cfg.continuityMaxRetries}`,
+        `Activity heartbeat: ${cfg.activityHeartbeatEnabled}`,
+        `Heartbeat threshold: ${cfg.activityHeartbeatMs}ms`,
+        `Last activity at: ${formatTimestamp(session.lastActivityAt)}`,
+        `Last RLM at: ${formatTimestamp(session.lastRlmAt)}`,
         `Last recovery at: ${formatTimestamp(session.lastRecoveryAt)}`,
         `Last prompt: ${session.lastRawPrompt || "(none)"}`,
         `Last query: ${session.lastQuery || "(none)"}`,
@@ -594,6 +629,8 @@ export default function piContextPlugin(api: PluginApi): void {
             `  prompt=${session.lastRawPrompt ? truncate(session.lastRawPrompt, 120) : "(none)"}`,
             `  query=${session.lastQuery ? truncate(session.lastQuery, 120) : "(none)"}`,
             `  hints=${session.lastHints.length}`,
+            `  lastActivityAt=${formatTimestamp(session.lastActivityAt)}`,
+            `  lastRlmAt=${formatTimestamp(session.lastRlmAt)}`,
             `  pendingRecovery=${session.pendingRecovery ? session.pendingRecovery.kind : "none"}`,
             `  lastRecoveryAt=${formatTimestamp(session.lastRecoveryAt)}`,
           ].join("\n")
@@ -609,6 +646,7 @@ export default function piContextPlugin(api: PluginApi): void {
         const prompt = extractPrompt(payload);
         const sessionKey = getSessionKey(payload);
         const session = ensureSession(sessionKey);
+        session.lastActivityAt = Date.now();
         log(api, "debug", "before_prompt_build received payload", {
           sessionKey,
           hasPrompt: Boolean(prompt.trim()),
@@ -628,11 +666,13 @@ export default function piContextPlugin(api: PluginApi): void {
         session.lastRawPrompt = prompt;
         session.lastQuery = refinedQuery;
         session.lastHints = hints;
+        session.lastRlmAt = Date.now();
         log(api, "info", "recall search complete", {
           sessionKey,
           sessionTag: session.sessionTag,
           yamsCwd: cfg.yamsCwd,
           hits: hints.length,
+          queryPreview: truncate(refinedQuery, 180),
         });
         const prependParts: string[] = [];
         if (hints.length > 0) {
@@ -681,6 +721,7 @@ export default function piContextPlugin(api: PluginApi): void {
       try {
         const sessionKey = getSessionKey(payload);
         const session = ensureSession(sessionKey);
+        session.lastActivityAt = Date.now();
         const userPrompt = findLatestMessageText(payload, "user") || session.lastRawPrompt;
         const assistantText = findLatestMessageText(payload, "assistant");
         log(api, "debug", "agent_end received payload", {
@@ -720,6 +761,12 @@ export default function piContextPlugin(api: PluginApi): void {
 
         let stored = 0;
         for (let i = 0; i < chunks.length; i += 1) {
+          log(api, "info", "attempting memory store", {
+            sessionTag: session.sessionTag,
+            chunkType: chunks[i].chunkType,
+            chunkPreview: truncate(chunks[i].content, 140),
+            index: i,
+          });
           const ok = await storeRlmChunk(cfg, session.sessionTag, chunks[i], i);
           if (ok) stored += 1;
         }
@@ -749,5 +796,44 @@ export default function piContextPlugin(api: PluginApi): void {
     continuityWatchdogEnabled: cfg.continuityWatchdogEnabled,
     continuityMaxRetries: cfg.continuityMaxRetries,
     continuityCooldownMs: cfg.continuityCooldownMs,
+    activityHeartbeatEnabled: cfg.activityHeartbeatEnabled,
+    activityHeartbeatMs: cfg.activityHeartbeatMs,
+    activityHeartbeatPollMs: cfg.activityHeartbeatPollMs,
   });
+
+  if (cfg.activityHeartbeatEnabled && typeof api?.registerService === "function") {
+    api.registerService({
+      id: "pi-context.activity-heartbeat",
+      start: async (ctx: any) => {
+        const pollMs = Math.max(30_000, Number(cfg.activityHeartbeatPollMs || 300_000));
+        const timer = setInterval(async () => {
+          const now = Date.now();
+          for (const [sessionKey, session] of sessions.entries()) {
+            if (!shouldHeartbeatRefresh(session, cfg, now)) continue;
+            try {
+              const query = session.lastQuery || session.lastRawPrompt;
+              const hints = await searchRlm(cfg, query, session.sessionTag);
+              session.lastHints = hints;
+              session.lastRlmAt = Date.now();
+              ctx?.logger?.info?.(
+                `[pi-context] activity heartbeat refreshed RLM for ${sessionKey} (hits=${hints.length})`
+              );
+            } catch (error: any) {
+              ctx?.logger?.warn?.(
+                `[pi-context] activity heartbeat refresh failed for ${sessionKey}: ${String(error?.message || error)}`
+              );
+            }
+          }
+        }, pollMs);
+        (globalThis as any).__piContextHeartbeatTimer = timer;
+      },
+      stop: async () => {
+        const timer = (globalThis as any).__piContextHeartbeatTimer;
+        if (timer) {
+          clearInterval(timer);
+          delete (globalThis as any).__piContextHeartbeatTimer;
+        }
+      },
+    });
+  }
 }

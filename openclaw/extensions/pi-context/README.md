@@ -22,6 +22,7 @@ Implemented in the first pass:
 - background LM Studio sidecar query-refinement step using `sidecarModel`
 - `agent_end` hook for automatic post-turn memory extraction and YAMS storage using the same sidecar model
 - continuity watchdog that marks incomplete/aborted turns and injects recovery guidance on the next turn
+- activity heartbeat that refreshes RLM for tracked sessions after inactivity
 
 Deferred:
 
@@ -116,6 +117,9 @@ stays optional.
 - `continuityWatchdogEnabled` - default `true`
 - `continuityMaxRetries` - default `1`
 - `continuityCooldownMs` - default `120000`
+- `activityHeartbeatEnabled` - default `true`
+- `activityHeartbeatMs` - default `1800000`
+- `activityHeartbeatPollMs` - default `300000`
 - `lmstudioBaseUrl` - default `http://host.docker.internal:1234/v1`
 - `sidecarModel` - default background model for extractor/briefing tasks (`qwen_qwen3.5-4b`)
 - `dcsCli` - default `research-agent`

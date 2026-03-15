@@ -130,3 +130,17 @@ export function buildRecoveryContext(state) {
   return lines.join("\n\n");
 }
 
+export function shouldHeartbeatRefresh(state, cfg, now = Date.now()) {
+  if (!cfg?.activityHeartbeatEnabled) return false;
+  if (!state) return false;
+  const thresholdMs = Number(cfg.activityHeartbeatMs || 0);
+  if (thresholdMs <= 0) return false;
+  const baseline = Math.max(
+    Number(state.lastRlmAt || 0),
+    Number(state.lastActivityAt || 0),
+    Number(state.lastRecoveryAt || 0)
+  );
+  if (baseline <= 0) return false;
+  if (!String(state.lastQuery || state.lastRawPrompt || "").trim()) return false;
+  return now - baseline >= thresholdMs;
+}

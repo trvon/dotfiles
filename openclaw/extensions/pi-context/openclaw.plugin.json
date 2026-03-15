@@ -60,6 +60,20 @@
         "minimum": 0,
         "default": 120000
       },
+      "activityHeartbeatEnabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "activityHeartbeatMs": {
+        "type": "integer",
+        "minimum": 60000,
+        "default": 1800000
+      },
+      "activityHeartbeatPollMs": {
+        "type": "integer",
+        "minimum": 30000,
+        "default": 300000
+      },
       "lmstudioBaseUrl": {
         "type": "string",
         "default": "http://host.docker.internal:1234/v1"
@@ -115,6 +129,15 @@
     },
     "continuityCooldownMs": {
       "label": "Continuity Cooldown (ms)"
+    },
+    "activityHeartbeatEnabled": {
+      "label": "Activity Heartbeat"
+    },
+    "activityHeartbeatMs": {
+      "label": "Activity Heartbeat Threshold (ms)"
+    },
+    "activityHeartbeatPollMs": {
+      "label": "Activity Heartbeat Poll (ms)"
     },
     "lmstudioBaseUrl": {
       "label": "LM Studio Base URL"

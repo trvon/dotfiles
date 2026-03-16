@@ -1,6 +1,6 @@
 {
-  "lastChangelogVersion": "0.57.1",
-  "defaultProvider": "llama-cpp",
+  "lastChangelogVersion": "0.58.3",
+  "defaultProvider": "mlx",
   "defaultModel": "qwen3.5-35b-a3b",
   "defaultThinkingLevel": "medium",
   "thinkingBudgets": {
@@ -22,9 +22,7 @@
   },
   "enabledModels": [
     "qwen3.5-35b-a3b",
-    "qwen3.5-9b",
-    "unsloth/qwen3.5-27b",
-    "unsloth/qwen3.5-35b-a3b"
+    "qwen3.5-9b"
   ],
   "packages": [
     "npm:@sage-protocol/pi-adapter@0.1.5"

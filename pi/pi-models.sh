@@ -155,7 +155,7 @@ for provider_key, (backend, role) in provider_port_map.items():
     port = ports.get(backend, {}).get(role)
     if port is None:
         continue
-    expected_url = f'http://localhost:{port}/v1'
+    expected_url = f'http://127.0.0.1:{port}/v1'
     current_url = providers[provider_key].get('baseUrl', '')
     if current_url != expected_url:
         providers[provider_key]['baseUrl'] = expected_url
@@ -207,9 +207,14 @@ UBATCH_SIZE="${PI_UBATCH_SIZE:-1024}"
 THREADS="${PI_THREADS:--1}"
 THREADS_BATCH="${PI_THREADS_BATCH:-16}"
 
-# Parallelism: 4 slots each — primary has headroom (93 GB / 115 GB with 4 slots at 262k f16)
-# Sidecar already at 4 slots (65k ctx = much smaller KV cache per slot)
-PRIMARY_SLOTS="${PI_PRIMARY_SLOTS:-4}"
+# Parallelism
+# Primary: 1 slot — pi runs a single conversation, so 1 slot gets the full
+# 262K context.  With 4 slots the per-slot ctx was only 65K, but pi's
+# models.json advertises 262K, causing the server to reject prompts that
+# exceed the per-slot limit.
+# Sidecar: 4 slots — optimizer / oracle / compaction calls are short and
+# benefit from concurrent slots (262K / 4 = 65K per slot, plenty).
+PRIMARY_SLOTS="${PI_PRIMARY_SLOTS:-1}"
 SIDECAR_SLOTS="${PI_SIDECAR_SLOTS:-4}"
 
 # mlock: keep model weights pinned in RAM (prevents macOS memory pressure eviction)
@@ -386,7 +391,7 @@ PY
 
 wait_for_health() {
   local name="$1" port="$2" timeout="$3"
-  local url="http://localhost:${port}/health"
+  local url="http://127.0.0.1:${port}/health"
   local elapsed=0
 
   log "Waiting for $name to be ready on port $port..."
@@ -407,7 +412,7 @@ wait_for_health() {
 
 wait_for_health_mlx() {
   local name="$1" port="$2" timeout="$3"
-  local url="http://localhost:${port}/v1/models"
+  local url="http://127.0.0.1:${port}/v1/models"
   local elapsed=0
 
   log "Waiting for MLX $name to be ready on port $port..."
@@ -811,11 +816,11 @@ cmd_status() {
     pid=$(get_pid "$PRIMARY_PID")
     local llama_primary_port="${PI_PRIMARY_PORT:-$(read_port llama-cpp primary || echo 8090)}"
     local health
-    health=$(curl -sf "http://localhost:${llama_primary_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
+    health=$(curl -sf "http://127.0.0.1:${llama_primary_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
     log "  LLAMA PRIMARY  PID=$pid  port=$llama_primary_port  health=$health"
 
     local slots_info
-    slots_info=$(curl -sf "http://localhost:${llama_primary_port}/slots" 2>/dev/null | python3 -c "
+    slots_info=$(curl -sf "http://127.0.0.1:${llama_primary_port}/slots" 2>/dev/null | python3 -c "
 import sys, json
 slots = json.load(sys.stdin)
 busy = sum(1 for s in slots if s.get('is_processing', False))
@@ -831,11 +836,11 @@ print(f'{busy}/{total} slots busy')
     pid=$(get_pid "$SIDECAR_PID")
     local llama_sidecar_port="${PI_SIDECAR_PORT:-$(read_port llama-cpp sidecar || echo 8091)}"
     local health
-    health=$(curl -sf "http://localhost:${llama_sidecar_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
+    health=$(curl -sf "http://127.0.0.1:${llama_sidecar_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
     log "  LLAMA SIDECAR  PID=$pid  port=$llama_sidecar_port  health=$health"
 
     local slots_info
-    slots_info=$(curl -sf "http://localhost:${llama_sidecar_port}/slots" 2>/dev/null | python3 -c "
+    slots_info=$(curl -sf "http://127.0.0.1:${llama_sidecar_port}/slots" 2>/dev/null | python3 -c "
 import sys, json
 slots = json.load(sys.stdin)
 busy = sum(1 for s in slots if s.get('is_processing', False))
@@ -852,7 +857,7 @@ print(f'{busy}/{total} slots busy')
     pid=$(get_pid "$MLX_PRIMARY_PID")
     local mlx_primary_port="${PI_PRIMARY_PORT:-$(read_port mlx primary || echo 8080)}"
     local health
-    health=$(curl -sf "http://localhost:${mlx_primary_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
+    health=$(curl -sf "http://127.0.0.1:${mlx_primary_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
     log "  MLX PRIMARY    PID=$pid  port=$mlx_primary_port  health=$health  source=$resolved_primary_source"
   fi
 
@@ -862,7 +867,7 @@ print(f'{busy}/{total} slots busy')
     pid=$(get_pid "$MLX_SIDECAR_PID")
     local mlx_sidecar_port="${PI_SIDECAR_PORT:-$(read_port mlx sidecar || echo 8081)}"
     local health
-    health=$(curl -sf "http://localhost:${mlx_sidecar_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
+    health=$(curl -sf "http://127.0.0.1:${mlx_sidecar_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
     log "  MLX SIDECAR    PID=$pid  port=$mlx_sidecar_port  health=$health  source=$resolved_sidecar_source"
   fi
 

@@ -1,61 +1,7 @@
 {
   "providers": {
-    "lmstudio": {
-      "baseUrl": "http://localhost:1234/v1",
-      "apiKey": "lmstudio",
-      "models": [
-        {
-          "id": "qwen3.5-27b-heretic",
-          "api": "openai-completions",
-          "contextWindow": 262144,
-          "maxTokens": 32768
-        },
-        {
-          "id": "mlx-community/qwen3.5-27b",
-          "api": "openai-completions",
-          "contextWindow": 262144,
-          "maxTokens": 32768
-        },
-        {
-          "id": "unsloth/qwen3.5-27b",
-          "api": "openai-completions",
-          "contextWindow": 262144,
-          "maxTokens": 32768
-        },
-        {
-          "id": "unsloth/qwen3.5-35b-a3b",
-          "api": "openai-completions",
-          "contextWindow": 262144,
-          "maxTokens": 32768
-        },
-        {
-          "id": "qwen/qwen3-4b-thinking-2507",
-          "api": "openai-completions",
-          "contextWindow": 65536,
-          "maxTokens": 16384
-        },
-        {
-          "id": "mistralai/ministral-3-14b-reasoning",
-          "api": "openai-completions",
-          "contextWindow": 131072,
-          "maxTokens": 16384
-        },
-        {
-          "id": "openai/gpt-oss-120b",
-          "api": "openai-completions",
-          "contextWindow": 32768,
-          "maxTokens": 16384
-        },
-        {
-          "id": "openai/gpt-oss-20b",
-          "api": "openai-completions",
-          "contextWindow": 32768,
-          "maxTokens": 32768
-        }
-      ]
-    },
     "llamabarn": {
-      "baseUrl": "http://localhost:2276/v1",
+      "baseUrl": "http://127.0.0.1:2276/v1",
       "apiKey": "llamabarn",
       "models": [
         {
@@ -79,7 +25,7 @@
       ]
     },
     "mlx": {
-      "baseUrl": "http://localhost:8080/v1",
+      "baseUrl": "http://127.0.0.1:8080/v1",
       "apiKey": "mlx",
       "models": [
         {
@@ -100,7 +46,7 @@
       ]
     },
     "mlx-sidecar": {
-      "baseUrl": "http://localhost:8081/v1",
+      "baseUrl": "http://127.0.0.1:8081/v1",
       "apiKey": "mlx",
       "models": [
         {
@@ -121,7 +67,7 @@
       ]
     },
     "llama-cpp": {
-      "baseUrl": "http://localhost:8090/v1",
+      "baseUrl": "http://127.0.0.1:8090/v1",
       "apiKey": "llama-cpp",
       "models": [
         {
@@ -142,7 +88,7 @@
       ]
     },
     "llama-cpp-sidecar": {
-      "baseUrl": "http://localhost:8091/v1",
+      "baseUrl": "http://127.0.0.1:8091/v1",
       "apiKey": "llama-cpp",
       "models": [
         {
@@ -150,7 +96,7 @@
           "name": "Qwen3.5 9B (llama-cpp Q8)",
           "api": "openai-completions",
           "reasoning": true,
-          "contextWindow": 262144,
+          "contextWindow": 65536,
           "maxTokens": 32768,
           "compat": {
             "thinkingFormat": "qwen",
@@ -164,16 +110,6 @@
     }
   },
   "sidecar": {
-    "lmstudio": {
-      "optimizer": "qwen3.5-9b",
-      "optimizerFallback": "unsloth/qwen3.5-27b",
-      "researchOptimizer": "qwen3.5-9b",
-      "oracle": "unsloth/qwen3.5-35b-a3b",
-      "rlmExtractor": "qwen3.5-9b",
-      "compaction": "qwen3.5-9b",
-      "verifier": "unsloth/qwen3.5-35b-a3b",
-      "critic": "unsloth/qwen3.5-35b-a3b"
-    },
     "llamabarn": {
       "optimizer": "ministral-3-14b-reasoning",
       "optimizerFallback": "devstral-2-24b",

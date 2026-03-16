@@ -1,12 +1,12 @@
 /**
  * model-backend.ts — Shared model-state provider abstraction.
  *
- * Probes MLX (localhost:8090), llama-cpp (localhost:8080), LM Studio
- * (localhost:1234), and LlamaBarn (localhost:2276) to detect which backend
- * is running and retrieve model state / loaded context info.
+ * Probes MLX (127.0.0.1:8080), llama-cpp (127.0.0.1:8090), and
+ * LlamaBarn (127.0.0.1:2276) to detect which backend is running and
+ * retrieve model state / loaded context info.
  *
- * Auto-detection: probes all four in parallel, uses first responder.
- * Override: PI_MODEL_BACKEND=mlx | llama-cpp | lmstudio | llamabarn | auto (default: auto).
+ * Auto-detection: probes all three in parallel, uses first responder.
+ * Override: PI_MODEL_BACKEND=mlx | llama-cpp | llamabarn | auto (default: auto).
  *
  * Also provides sidecar model configuration: reads the `sidecar` section from
  * models.json and returns per-role model IDs for the active provider.
@@ -27,7 +27,7 @@ import path from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
-export type BackendName = "lmstudio" | "llamabarn" | "llama-cpp" | "mlx" | "unknown";
+export type BackendName = "llamabarn" | "llama-cpp" | "mlx" | "unknown";
 
 export interface ModelInfo {
   /** Which backend answered */
@@ -96,20 +96,18 @@ export interface SidecarConfig {
 
 const BACKEND_PREFERENCE = parseBackendPref(process.env.PI_MODEL_BACKEND);
 
-const LMSTUDIO_MODELS_URL =
-  process.env.PI_LMSTUDIO_MODELS_URL || "http://localhost:1234/api/v0/models";
 const LLAMABARN_MODELS_URL =
-  process.env.PI_LLAMABARN_MODELS_URL || "http://localhost:2276/v1/models";
+  process.env.PI_LLAMABARN_MODELS_URL || "http://127.0.0.1:2276/v1/models";
 const LLAMACPP_PRIMARY_HEALTH_URL =
-  process.env.PI_LLAMACPP_PRIMARY_HEALTH_URL || "http://localhost:8080/health";
+  process.env.PI_LLAMACPP_PRIMARY_HEALTH_URL || "http://127.0.0.1:8090/health";
 const LLAMACPP_SIDECAR_HEALTH_URL =
-  process.env.PI_LLAMACPP_SIDECAR_HEALTH_URL || "http://localhost:8081/health";
+  process.env.PI_LLAMACPP_SIDECAR_HEALTH_URL || "http://127.0.0.1:8091/health";
 const LLAMACPP_PRIMARY_SLOTS_URL =
-  process.env.PI_LLAMACPP_PRIMARY_SLOTS_URL || "http://localhost:8080/slots";
+  process.env.PI_LLAMACPP_PRIMARY_SLOTS_URL || "http://127.0.0.1:8090/slots";
 const MLX_PRIMARY_HEALTH_URL =
-  process.env.PI_MLX_PRIMARY_HEALTH_URL || "http://localhost:8090/health";
+  process.env.PI_MLX_PRIMARY_HEALTH_URL || "http://127.0.0.1:8080/health";
 const MLX_PRIMARY_MODELS_URL =
-  process.env.PI_MLX_PRIMARY_MODELS_URL || "http://localhost:8090/v1/models";
+  process.env.PI_MLX_PRIMARY_MODELS_URL || "http://127.0.0.1:8080/v1/models";
 const PROBE_TIMEOUT_MS = parsePositiveInt(process.env.PI_MODEL_BACKEND_TIMEOUT_MS, 2500);
 
 // ---------------------------------------------------------------------------
@@ -117,6 +115,18 @@ const PROBE_TIMEOUT_MS = parsePositiveInt(process.env.PI_MODEL_BACKEND_TIMEOUT_M
 // ---------------------------------------------------------------------------
 
 const MODELS_JSON_PATH = path.join(homedir(), ".pi", "agent", "models.json");
+const SETTINGS_JSON_PATH = path.join(homedir(), ".pi", "agent", "settings.json");
+const PROVIDER_TRACE_FILE = path.join(homedir(), ".pi", "agent", "provider-resolution.jsonl");
+const PROVIDER_TRACE_ENABLED = (process.env.PI_PROVIDER_TRACE ?? "1") !== "0";
+
+/** Append a one-line JSON trace to the provider resolution log. */
+function providerTrace(event: string, data: Record<string, unknown>): void {
+  if (!PROVIDER_TRACE_ENABLED) return;
+  try {
+    const line = JSON.stringify({ t: Date.now(), event, ...data }) + "\n";
+    fs.appendFileSync(PROVIDER_TRACE_FILE, line);
+  } catch { /* best-effort */ }
+}
 
 let _modelsJsonCache: any | null = null;
 let _modelsJsonCacheMtime = 0;
@@ -135,10 +145,37 @@ function readModelsJsonDoc(): any {
   }
 }
 
-/** Default sidecar model IDs when `sidecar` section is absent or missing a provider. */
+let _settingsJsonCache: any | null = null;
+let _settingsJsonCacheMtime = 0;
+
+/**
+ * Read `defaultProvider` from settings.json (mtime-cached).
+ * Returns the provider string or "" if unavailable.
+ */
+function readDefaultProvider(): string {
+  try {
+    const stat = fs.statSync(SETTINGS_JSON_PATH);
+    const mtime = stat.mtimeMs;
+    if (!_settingsJsonCache || mtime !== _settingsJsonCacheMtime) {
+      const raw = fs.readFileSync(SETTINGS_JSON_PATH, "utf-8");
+      _settingsJsonCache = JSON.parse(raw);
+      _settingsJsonCacheMtime = mtime;
+    }
+    const dp = _settingsJsonCache?.defaultProvider;
+    return typeof dp === "string" ? dp.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Default sidecar model IDs when `sidecar` section is absent or missing a
+ * provider.  Uses generic model IDs that match the llama-cpp sidecar config
+ * (the expected default backend).
+ */
 const DEFAULT_SIDECAR: SidecarConfig = {
   optimizer: "qwen3.5-9b",
-  optimizerFallback: "unsloth/qwen3.5-27b",
+  optimizerFallback: "qwen3.5-9b",
   researchOptimizer: "qwen3.5-9b",
   oracle: "",                    // empty → falls back to primary model
   rlmExtractor: "qwen3.5-9b",
@@ -190,7 +227,7 @@ function readSidecarMap(): Record<string, SidecarConfig> {
 /**
  * Get sidecar model configuration for the given provider.
  *
- * Falls back to the DEFAULT_SIDECAR (LM Studio hardcoded defaults) if the
+ * Falls back to DEFAULT_SIDECAR (generic qwen3.5-9b defaults) if the
  * provider has no entry in models.json `sidecar` section.
  */
 export function getSidecarConfig(provider: string): SidecarConfig {
@@ -201,9 +238,9 @@ export function getSidecarConfig(provider: string): SidecarConfig {
 /**
  * Resolve the provider name to use for sidecar model registry lookups.
  *
- * For most backends (lmstudio, llamabarn) this returns the same provider.
- * For llama-cpp, the primary model lives on port 8080 ("llama-cpp") but
- * sidecar models live on port 8081 ("llama-cpp-sidecar"). The
+ * For most backends (llamabarn) this returns the same provider.
+ * For llama-cpp, the primary model lives on port 8090 ("llama-cpp") but
+ * sidecar models live on port 8091 ("llama-cpp-sidecar"). The
  * `_sidecarProvider` field in the sidecar config handles this redirect.
  */
 export function resolveSidecarProvider(provider: string): string {
@@ -212,19 +249,37 @@ export function resolveSidecarProvider(provider: string): string {
 }
 
 /**
- * Resolve the active provider name from extension context.
+ * Resolve the active provider name for sidecar routing.
  *
  * Priority:
  *   1. PI_SIDECAR_PROVIDER env var (global override)
- *   2. ctx.model?.provider (the provider of the active session model)
- *   3. "lmstudio" (safe fallback)
+ *   2. settings.json defaultProvider (single source of truth)
+ *   3. ctx.model?.provider (session model's provider — last resort only)
+ *   4. "mlx" (hardcoded fallback, should never be reached)
+ *
+ * NOTE: settings.json beats ctx.model.provider because ctx.model.provider
+ * reflects the *conversation* model's provider, NOT which backend should
+ * serve the sidecar/optimizer.  settings.json.defaultProvider is what the
+ * user explicitly configured as the active infrastructure backend.
  */
 export function resolveActiveProvider(ctx: { model?: { provider?: string } }): string {
   const envOverride = (process.env.PI_SIDECAR_PROVIDER || "").trim();
-  if (envOverride) return envOverride;
+  if (envOverride) {
+    providerTrace("resolveActiveProvider", { source: "env", value: envOverride });
+    return envOverride;
+  }
+  const settingsProvider = readDefaultProvider();
+  if (settingsProvider) {
+    providerTrace("resolveActiveProvider", { source: "settings.json", value: settingsProvider });
+    return settingsProvider;
+  }
   const ctxProvider = typeof ctx.model?.provider === "string" ? ctx.model.provider.trim() : "";
-  if (ctxProvider) return ctxProvider;
-  return "lmstudio";
+  if (ctxProvider) {
+    providerTrace("resolveActiveProvider", { source: "ctx.model.provider", value: ctxProvider });
+    return ctxProvider;
+  }
+  providerTrace("resolveActiveProvider", { source: "hardcoded_fallback", value: "mlx" });
+  return "mlx";
 }
 
 function getProviderModelRecord(provider: string, modelId: string): Record<string, any> | null {
@@ -305,9 +360,8 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-function parseBackendPref(value: string | undefined): "lmstudio" | "llamabarn" | "llama-cpp" | "mlx" | "auto" {
+function parseBackendPref(value: string | undefined): "llamabarn" | "llama-cpp" | "mlx" | "auto" {
   const v = (value || "").trim().toLowerCase();
-  if (v === "lmstudio" || v === "lms") return "lmstudio";
   if (v === "llamabarn" || v === "barn") return "llamabarn";
   if (v === "llama-cpp" || v === "llamacpp" || v === "lcpp") return "llama-cpp";
   if (v === "mlx") return "mlx";
@@ -318,7 +372,7 @@ function parseBackendPref(value: string | undefined): "lmstudio" | "llamabarn" |
  * Match a model ID that may include a publisher prefix (e.g. "unsloth/qwen3.5-35b-a3b")
  * against a backend's model ID that may omit the prefix (e.g. "qwen3.5-35b-a3b").
  *
- * Also checks the backend's publisher field for LM Studio entries.
+ * Also checks the backend's publisher field if present.
  */
 function modelIdMatches(
   wantedId: string,
@@ -331,7 +385,7 @@ function modelIdMatches(
   // Exact match
   if (entryId === wanted) return true;
 
-  // wanted = "publisher/name", entry.id = "name" (LM Studio style)
+  // wanted = "publisher/name", entry.id = "name"
   const slashIdx = wanted.indexOf("/");
   if (slashIdx > 0) {
     const wantedPublisher = wanted.slice(0, slashIdx);
@@ -354,55 +408,6 @@ function modelIdMatches(
   }
 
   return false;
-}
-
-// ---------------------------------------------------------------------------
-// LM Studio provider
-// ---------------------------------------------------------------------------
-
-interface LmsModelRow {
-  id: string;
-  publisher?: string;
-  state?: string;
-  loaded_context_length?: number;
-  max_context_length?: number;
-}
-
-async function probeLmStudio(
-  modelId: string,
-  timeoutMs: number
-): Promise<ModelInfo | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(LMSTUDIO_MODELS_URL, { signal: controller.signal });
-    if (!res.ok) return null;
-    const data = (await res.json()) as any;
-    const rows: LmsModelRow[] = Array.isArray(data?.data) ? data.data : [];
-    const row = rows.find((r) => modelIdMatches(modelId, r));
-    if (!row) {
-      return {
-        backend: "lmstudio",
-        state: "not-found",
-        loadedContextLength: null,
-        maxContextLength: null,
-        resolvedModelId: null,
-      };
-    }
-    const loaded = Number(row.loaded_context_length);
-    const maxCtx = Number(row.max_context_length);
-    return {
-      backend: "lmstudio",
-      state: String(row.state || "unknown"),
-      loadedContextLength: Number.isFinite(loaded) && loaded > 0 ? Math.floor(loaded) : null,
-      maxContextLength: Number.isFinite(maxCtx) && maxCtx > 0 ? Math.floor(maxCtx) : null,
-      resolvedModelId: typeof row.id === "string" ? row.id : null,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +491,7 @@ async function isReachable(url: string, timeoutMs: number): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// llama-cpp provider (raw llama-server on localhost:8080/8081)
+// llama-cpp provider (raw llama-server on 127.0.0.1:8090/8091)
 // ---------------------------------------------------------------------------
 
 /**
@@ -538,7 +543,7 @@ async function probeLlamaCpp(
 }
 
 // ---------------------------------------------------------------------------
-// MLX provider (mlx_lm.server on localhost:8090)
+// MLX provider (mlx_lm.server on 127.0.0.1:8080)
 // ---------------------------------------------------------------------------
 
 /**
@@ -665,7 +670,7 @@ export function inferModelSource(modelInfo: ModelInfo): "local-path" | "repo-or-
  * Resolution order:
  *   1. If PI_MODEL_BACKEND is set, only probe that backend.
  *   2. Otherwise probe all four in parallel; return the first to respond
- *      with a loaded model.  Priority on tie: mlx > llama-cpp > lmstudio > llamabarn.
+ *      with a loaded model.  Priority on tie: mlx > llama-cpp > llamabarn.
  */
 export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
   const fallback: ModelInfo = {
@@ -677,9 +682,6 @@ export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
   };
   if (!modelId) return fallback;
 
-  if (BACKEND_PREFERENCE === "lmstudio") {
-    return (await probeLmStudio(modelId, PROBE_TIMEOUT_MS)) ?? fallback;
-  }
   if (BACKEND_PREFERENCE === "llamabarn") {
     return (await probeLlamaBarn(modelId, PROBE_TIMEOUT_MS)) ?? fallback;
   }
@@ -691,22 +693,19 @@ export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
   }
 
   // auto: probe all in parallel
-  const [mlx, lcpp, lms, barn] = await Promise.all([
+  const [mlx, lcpp, barn] = await Promise.all([
     probeMlx(modelId, PROBE_TIMEOUT_MS),
     probeLlamaCpp(modelId, PROBE_TIMEOUT_MS),
-    probeLmStudio(modelId, PROBE_TIMEOUT_MS),
     probeLlamaBarn(modelId, PROBE_TIMEOUT_MS),
   ]);
 
   // Prefer whichever found the model in a loaded state (mlx first, then llama-cpp)
   if (mlx && mlx.state === "loaded") return mlx;
   if (lcpp && lcpp.state === "loaded") return lcpp;
-  if (lms && lms.state === "loaded") return lms;
   if (barn && barn.state === "loaded") return barn;
   // Then prefer whichever responded at all
   if (mlx) return mlx;
   if (lcpp) return lcpp;
-  if (lms) return lms;
   if (barn) return barn;
 
   return fallback;
@@ -726,16 +725,14 @@ export async function fetchLoadedContextWindow(modelId: string): Promise<number 
  * Detect which backend(s) are reachable (for diagnostic display).
  */
 export async function detectBackends(): Promise<BackendStatus[]> {
-  const [mlx, lcpp, lms, barn] = await Promise.all([
+  const [mlx, lcpp, barn] = await Promise.all([
     isReachable(MLX_PRIMARY_HEALTH_URL, PROBE_TIMEOUT_MS),
     isReachable(LLAMACPP_PRIMARY_HEALTH_URL, PROBE_TIMEOUT_MS),
-    isReachable(LMSTUDIO_MODELS_URL, PROBE_TIMEOUT_MS),
     isReachable(LLAMABARN_MODELS_URL, PROBE_TIMEOUT_MS),
   ]);
   const results: BackendStatus[] = [];
   results.push({ backend: "mlx", reachable: mlx });
   results.push({ backend: "llama-cpp", reachable: lcpp });
-  results.push({ backend: "lmstudio", reachable: lms });
   results.push({ backend: "llamabarn", reachable: barn });
   return results;
 }
@@ -745,16 +742,14 @@ export async function detectBackends(): Promise<BackendStatus[]> {
  */
 export async function fetchModelInfoAll(modelId: string): Promise<ModelInfo[]> {
   if (!modelId) return [];
-  const [mlx, lcpp, lms, barn] = await Promise.all([
+  const [mlx, lcpp, barn] = await Promise.all([
     probeMlx(modelId, PROBE_TIMEOUT_MS),
     probeLlamaCpp(modelId, PROBE_TIMEOUT_MS),
-    probeLmStudio(modelId, PROBE_TIMEOUT_MS),
     probeLlamaBarn(modelId, PROBE_TIMEOUT_MS),
   ]);
   const results: ModelInfo[] = [];
   if (mlx) results.push(mlx);
   if (lcpp) results.push(lcpp);
-  if (lms) results.push(lms);
   if (barn) results.push(barn);
   return results;
 }

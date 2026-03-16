@@ -1172,6 +1172,7 @@ async function optimizeWithModel(
       }, UI_PROGRESS_NOTIFY_MS);
     }
 
+    let succeeded = false;
     try {
       const response = await completeWithInactivityTimeout(
         model,
@@ -1208,6 +1209,7 @@ async function optimizeWithModel(
               mode: loose.mode,
               confidence: loose.confidence,
             });
+            succeeded = true;
             return { result: loose, modelId: model.id };
           }
           trace("optimizer_model_loose_rejected", {
@@ -1230,6 +1232,7 @@ async function optimizeWithModel(
         mode: parsed.mode,
         confidence: parsed.confidence,
       });
+      succeeded = true;
       return { result: parsed, modelId: model.id };
     } finally {
       if (progressTimer) clearTimeout(progressTimer);
@@ -1237,7 +1240,9 @@ async function optimizeWithModel(
         ctx.ui.setWorkingMessage();
         ctx.ui.setStatus("hybrid-run", undefined);
         if (longRunningNotified) {
-          ctx.ui.notify(`Hybrid optimizer finished (${model.id}).`);
+          ctx.ui.notify(succeeded
+            ? `Hybrid optimizer finished (${model.id}).`
+            : `Hybrid optimizer failed to parse (${model.id}), trying next...`);
         }
       }
     }

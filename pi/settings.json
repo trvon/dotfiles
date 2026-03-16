@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "0.56.3",
-  "defaultProvider": "mlx",
+  "lastChangelogVersion": "0.57.1",
+  "defaultProvider": "llama-cpp",
   "defaultModel": "qwen3.5-35b-a3b",
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "medium",
   "thinkingBudgets": {
     "minimal": 512,
     "low": 2048,
@@ -30,5 +30,15 @@
     "npm:@sage-protocol/pi-adapter@0.1.5"
   ],
   "hideThinkingBlock": false,
-  "showHardwareCursor": true
+  "showHardwareCursor": true,
+  "ports": {
+    "mlx": {
+      "primary": 8080,
+      "sidecar": 8081
+    },
+    "llama-cpp": {
+      "primary": 8090,
+      "sidecar": 8091
+    }
+  }
 }

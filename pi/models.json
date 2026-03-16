@@ -79,15 +79,15 @@
       ]
     },
     "mlx": {
-      "baseUrl": "http://localhost:8090/v1",
+      "baseUrl": "http://localhost:8080/v1",
       "apiKey": "mlx",
       "models": [
         {
           "id": "qwen3.5-35b-a3b",
-          "name": "Qwen3.5 35B-A3B (MLX 5-bit)",
+          "name": "Qwen3.5 35B-A3B (MLX 8-bit)",
           "api": "openai-completions",
           "reasoning": true,
-          "contextWindow": 160000,
+          "contextWindow": 262144,
           "maxTokens": 32768,
           "compat": {
             "thinkingFormat": "qwen",
@@ -100,15 +100,57 @@
       ]
     },
     "mlx-sidecar": {
-      "baseUrl": "http://localhost:8091/v1",
+      "baseUrl": "http://localhost:8081/v1",
       "apiKey": "mlx",
       "models": [
         {
           "id": "qwen3.5-9b",
-          "name": "Qwen3.5 9B (MLX 4-bit)",
+          "name": "Qwen3.5 9B (MLX 8-bit)",
           "api": "openai-completions",
           "reasoning": true,
-          "contextWindow": 200000,
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "compat": {
+            "thinkingFormat": "qwen",
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "maxTokensField": "max_tokens"
+          }
+        }
+      ]
+    },
+    "llama-cpp": {
+      "baseUrl": "http://localhost:8090/v1",
+      "apiKey": "llama-cpp",
+      "models": [
+        {
+          "id": "qwen3.5-35b-a3b",
+          "name": "Qwen3.5 35B-A3B (llama-cpp Q8)",
+          "api": "openai-completions",
+          "reasoning": true,
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "compat": {
+            "thinkingFormat": "qwen",
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "maxTokensField": "max_tokens"
+          }
+        }
+      ]
+    },
+    "llama-cpp-sidecar": {
+      "baseUrl": "http://localhost:8091/v1",
+      "apiKey": "llama-cpp",
+      "models": [
+        {
+          "id": "qwen3.5-9b",
+          "name": "Qwen3.5 9B (llama-cpp Q8)",
+          "api": "openai-completions",
+          "reasoning": true,
+          "contextWindow": 262144,
           "maxTokens": 32768,
           "compat": {
             "thinkingFormat": "qwen",
@@ -144,6 +186,17 @@
     },
     "mlx": {
       "_sidecarProvider": "mlx-sidecar",
+      "optimizer": "qwen3.5-9b",
+      "optimizerFallback": "qwen3.5-9b",
+      "researchOptimizer": "qwen3.5-9b",
+      "oracle": "qwen3.5-9b",
+      "rlmExtractor": "qwen3.5-9b",
+      "compaction": "qwen3.5-9b",
+      "verifier": "qwen3.5-9b",
+      "critic": "qwen3.5-9b"
+    },
+    "llama-cpp": {
+      "_sidecarProvider": "llama-cpp-sidecar",
       "optimizer": "qwen3.5-9b",
       "optimizerFallback": "qwen3.5-9b",
       "researchOptimizer": "qwen3.5-9b",

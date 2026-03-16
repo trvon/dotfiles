@@ -3,15 +3,21 @@
 #
 # Supports two backends (configured via settings.json "defaultProvider"):
 #   mlx        — MLX-LM server (fast MoE generation on Apple Silicon)
-#   llama-cpp  — llama.cpp server (GGUF quantization, speculative decoding)
+#   llama-cpp  — llama.cpp server (GGUF quantization)
+#
+# Port assignments are centralized in settings.json → "ports":
+#   { "mlx": { "primary": 8080, "sidecar": 8081 },
+#     "llama-cpp": { "primary": 8090, "sidecar": 8091 } }
+# On start, models.json baseUrl fields are auto-synced from settings.json.
+# Manual sync: pi-models.sh sync-ports
 #
 # MLX mode launches:
-#   PRIMARY  (port 8090): Qwen3.5-35B-A3B 5-bit via mlx_lm.server
-#   SIDECAR  (port 8091): Qwen3.5-9B 4-bit via mlx_lm.server (~83 t/s gen)
+#   PRIMARY  (port from settings.json, default 8080): Qwen3.5-35B-A3B 8-bit via mlx_lm.server
+#   SIDECAR  (port from settings.json, default 8081): Qwen3.5-9B 8-bit via mlx_lm.server
 #
 # llama-cpp mode launches:
-#   PRIMARY  (port 8080): Qwen3.5-35B-A3B UD-Q4_K_XL via llama-server (~54 t/s gen)
-#   SIDECAR  (port 8081): Qwen3.5-9B UD-Q4_K_XL via llama-server
+#   PRIMARY  (port from settings.json, default 8090): Qwen3.5-35B-A3B UD-Q8_K_XL via llama-server
+#   SIDECAR  (port from settings.json, default 8091): Qwen3.5-9B UD-Q8_K_XL via llama-server
 #
 # Usage:
 #   pi-models.sh start [mlx|llama-cpp]   Start servers (auto-detects from settings.json)
@@ -19,17 +25,15 @@
 #   pi-models.sh restart                 Stop then start
 #   pi-models.sh status                  Show running state and health
 #   pi-models.sh logs [name]             Tail logs (primary|sidecar|all, default: all)
+#   pi-models.sh sync-ports              Sync models.json baseUrl from settings.json ports
 #
-# Environment overrides:
+# Environment overrides (take precedence over settings.json):
 #   PI_BACKEND           (default: auto-detect from settings.json)
-#   PI_PRIMARY_PORT      (default: 8080/8090 depending on backend)
-#   PI_SIDECAR_PORT      (default: 8081/8091 depending on backend)
+#   PI_PRIMARY_PORT      (overrides settings.json port for primary)
+#   PI_SIDECAR_PORT      (overrides settings.json port for sidecar)
 #   PI_PRIMARY_CTX       (default: 262144)
-#   PI_SIDECAR_CTX       (default: 65536)
+#   PI_SIDECAR_CTX       (default: 262144)
 #   PI_SIDECAR_SLOTS     (default: 4)
-#   PI_DRAFT_MAX         (default: 64)
-#   PI_DRAFT_MIN         (default: 8)
-#   PI_NGRAM_SIZE        (default: 24)
 #   PI_MODELS_DIR        (default: ~/.pi/agent)
 #   PI_LLAMA_SERVER      (default: llama-server from PATH)
 #   PI_MLX_VENV          (default: ~/.pi/mlx-env)
@@ -86,25 +90,98 @@ detect_backend() {
 
 BACKEND="${PI_BACKEND:-}"
 
-# Ports (defaults depend on backend, set after detection)
-# llama-cpp: 8080/8081, mlx: 8090/8091
+# ── Port configuration (single source of truth: settings.json → ports) ────────
+# Reads ports.{backend}.primary and ports.{backend}.sidecar from settings.json.
+# Env vars PI_PRIMARY_PORT / PI_SIDECAR_PORT override if set.
+# Fallback defaults: llama-cpp 8090/8091, mlx 8080/8081
+
+SETTINGS_JSON="$MODELS_DIR/settings.json"
+MODELS_JSON="$MODELS_DIR/models.json"
+
+# Read a port from settings.json: read_port <backend> <role>
+# e.g. read_port llama-cpp primary → 8090
+read_port() {
+  local backend="$1" role="$2"
+  if [[ -f "$SETTINGS_JSON" ]]; then
+    python3 -c "
+import json, sys
+d = json.load(open('$SETTINGS_JSON'))
+p = d.get('ports', {}).get('$backend', {}).get('$role', '')
+if p: print(p)
+else: sys.exit(1)
+" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# Sync models.json baseUrl fields to match ports in settings.json.
+# Called automatically on start, or manually via: pi-models.sh sync-ports
+sync_ports() {
+  if [[ ! -f "$SETTINGS_JSON" ]] || [[ ! -f "$MODELS_JSON" ]]; then
+    warn "Cannot sync ports: settings.json or models.json not found"
+    return 1
+  fi
+
+  python3 -c "
+import json, sys
+
+settings_path = '$SETTINGS_JSON'
+models_path = '$MODELS_JSON'
+
+with open(settings_path) as f:
+    settings = json.load(f)
+
+with open(models_path) as f:
+    models = json.load(f)
+
+ports = settings.get('ports', {})
+if not ports:
+    print('[pi-models] No ports section in settings.json, skipping sync', file=sys.stderr)
+    sys.exit(0)
+
+# Map provider keys in models.json → (backend, role) in settings.json ports
+provider_port_map = {
+    'mlx':               ('mlx', 'primary'),
+    'mlx-sidecar':       ('mlx', 'sidecar'),
+    'llama-cpp':         ('llama-cpp', 'primary'),
+    'llama-cpp-sidecar': ('llama-cpp', 'sidecar'),
+}
+
+changed = False
+providers = models.get('providers', {})
+for provider_key, (backend, role) in provider_port_map.items():
+    if provider_key not in providers:
+        continue
+    port = ports.get(backend, {}).get(role)
+    if port is None:
+        continue
+    expected_url = f'http://localhost:{port}/v1'
+    current_url = providers[provider_key].get('baseUrl', '')
+    if current_url != expected_url:
+        providers[provider_key]['baseUrl'] = expected_url
+        changed = True
+        print(f'[pi-models] sync: {provider_key} baseUrl → {expected_url}')
+
+if changed:
+    with open(models_path, 'w') as f:
+        json.dump(models, f, indent=2)
+        f.write('\n')
+    print('[pi-models] models.json ports synced from settings.json')
+else:
+    print('[pi-models] models.json ports already in sync')
+"
+}
 
 # Context sizes (Qwen3.5-35B-A3B native max: 262144)
 # Hybrid attention: only 16/64 layers use full KV cache -> modest KV footprint at 262k
 PRIMARY_CTX="${PI_PRIMARY_CTX:-262144}"
-SIDECAR_CTX="${PI_SIDECAR_CTX:-65536}"
-
-# Speculative decoding
-DRAFT_MAX="${PI_DRAFT_MAX:-64}"
-DRAFT_MIN="${PI_DRAFT_MIN:-8}"
-NGRAM_SIZE="${PI_NGRAM_SIZE:-24}"
+SIDECAR_CTX="${PI_SIDECAR_CTX:-262144}"
 
 # ── Performance tuning ─────────────────────────────────────────────────────────
 # Tuned for Apple Silicon M4 Max (12P + 4E cores, 128 GB unified memory)
 
 # GPU: offload all layers to Metal (999 = everything)
 GPU_LAYERS="${PI_GPU_LAYERS:-999}"
-GPU_LAYERS_DRAFT="${PI_GPU_LAYERS_DRAFT:-999}"
 
 # Flash attention: forced ON for Metal (significant speedup on Apple Silicon)
 FLASH_ATTN="on"
@@ -161,19 +238,18 @@ SAMPLING_MIN_P="0"
 SAMPLING_PRESENCE_PENALTY="0"
 
 # HuggingFace model repos (with :quant suffix for auto-download)
-PRIMARY_HF="unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
-DRAFT_HF="unsloth/Qwen3.5-4B-GGUF:Q4_K_XL"
-SIDECAR_HF="unsloth/Qwen3.5-9B-GGUF:Q4_K_XL"
+PRIMARY_HF="unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q8_K_XL"
+SIDECAR_HF="unsloth/Qwen3.5-9B-GGUF:UD-Q8_K_XL"
 
 # MLX model paths/repos
 # Source resolution order (per role): local path -> complete HF cache snapshot -> repo id.
 MLX_CACHE_ROOT="${PI_HF_CACHE_DIR:-$HOME/.cache/huggingface/hub}"
 
-MLX_PRIMARY_LOCAL="${PI_MLX_PRIMARY_LOCAL:-$HOME/.pi/benchmarks/qwen35-quants/Qwen3.5-35B-A3B-5bit}"
-MLX_PRIMARY_REPO="${PI_MLX_PRIMARY_REPO:-mlx-community/Qwen3.5-35B-A3B-5bit}"
+MLX_PRIMARY_LOCAL="${PI_MLX_PRIMARY_LOCAL:-$HOME/.pi/benchmarks/qwen35-quants/Qwen3.5-35B-A3B-8bit}"
+MLX_PRIMARY_REPO="${PI_MLX_PRIMARY_REPO:-mlx-community/Qwen3.5-35B-A3B-8bit}"
 
 MLX_SIDECAR_LOCAL="${PI_MLX_SIDECAR_LOCAL:-}"
-MLX_SIDECAR_REPO="${PI_MLX_SIDECAR_REPO:-mlx-community/Qwen3.5-9B-4bit}"
+MLX_SIDECAR_REPO="${PI_MLX_SIDECAR_REPO:-mlx-community/Qwen3.5-9B-8bit}"
 
 MLX_PRIMARY_MODEL="$MLX_PRIMARY_REPO"
 MLX_SIDECAR_MODEL="$MLX_SIDECAR_REPO"
@@ -197,11 +273,6 @@ MLX_PROMPT_CONCURRENCY="${PI_MLX_PROMPT_CONCURRENCY:-2}"
 MLX_KV_BITS="${PI_MLX_KV_BITS:-}"
 MLX_KV_GROUP_SIZE="${PI_MLX_KV_GROUP_SIZE:-64}"
 MLX_KV_START="${PI_MLX_KV_START:-1024}"
-
-# Draft model KV cache: q8_0 is fine for the small 4B draft — saves memory vs f16
-# Main model stays f16 (benchmarked: 20-55% throughput loss with q8_0 on main)
-DRAFT_KV_TYPE_K="${PI_DRAFT_KV_TYPE_K:-q8_0}"
-DRAFT_KV_TYPE_V="${PI_DRAFT_KV_TYPE_V:-q8_0}"
 
 # Aliases (used in OpenAI-compatible API as model names)
 PRIMARY_ALIAS="qwen3.5-35b-a3b"
@@ -387,6 +458,9 @@ cmd_start() {
   local backend_arg="${1:-}"
   BACKEND=$(detect_backend "$backend_arg")
 
+  # Sync models.json baseUrl ports from settings.json before starting servers
+  sync_ports
+
   case "$BACKEND" in
     mlx)       cmd_start_mlx ;;
     llama-cpp) cmd_start_llama ;;
@@ -401,9 +475,8 @@ cmd_start_mlx() {
   [[ -x "$MLX_PYTHON" ]] || die "MLX venv not found at $MLX_VENV. Run: python3 -m venv $MLX_VENV && $MLX_VENV/bin/pip install mlx-lm"
   [[ -f "$MLX_WRAPPER" ]] || die "MLX wrapper not found at $MLX_WRAPPER"
 
-  local mlx_primary_port="${PI_PRIMARY_PORT:-8090}"
-  local mlx_sidecar_port="${PI_SIDECAR_PORT:-8091}"
-
+  local mlx_primary_port="${PI_PRIMARY_PORT:-$(read_port mlx primary || echo 8080)}"
+  local mlx_sidecar_port="${PI_SIDECAR_PORT:-$(read_port mlx sidecar || echo 8081)}"
   local resolved_primary=""
   local resolved_primary_source=""
   IFS=$'\t' read -r resolved_primary resolved_primary_source < <(resolve_mlx_model_source "$MLX_PRIMARY_LOCAL" "$MLX_PRIMARY_REPO")
@@ -532,12 +605,12 @@ cmd_start_mlx() {
   log "│       Pi Models Server Status (MLX)          │"
   log "├─────────────────────────────────────────────┤"
   if $primary_ok; then
-    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (5-bit, $MLX_PRIMARY_SOURCE)"
+    log "│  PRIMARY  ✓  :$mlx_primary_port  qwen3.5-35b-a3b (8-bit, $MLX_PRIMARY_SOURCE)"
   else
     log "│  PRIMARY  ✗  :$mlx_primary_port  (not ready)"
   fi
   if $sidecar_ok; then
-    log "│  SIDECAR  ✓  :$mlx_sidecar_port  qwen3.5-9b (~83 t/s, $MLX_SIDECAR_SOURCE)"
+    log "│  SIDECAR  ✓  :$mlx_sidecar_port  qwen3.5-9b (8-bit, $MLX_SIDECAR_SOURCE)"
   else
     log "│  SIDECAR  ✗  :$mlx_sidecar_port  (not ready)"
   fi
@@ -557,8 +630,8 @@ cmd_start_mlx() {
 # ── llama-cpp start ────────────────────────────────────────────────────────────
 
 cmd_start_llama() {
-  local llama_primary_port="${PI_PRIMARY_PORT:-8080}"
-  local llama_sidecar_port="${PI_SIDECAR_PORT:-8081}"
+  local llama_primary_port="${PI_PRIMARY_PORT:-$(read_port llama-cpp primary || echo 8090)}"
+  local llama_sidecar_port="${PI_SIDECAR_PORT:-$(read_port llama-cpp sidecar || echo 8091)}"
 
   # Check llama-server exists
   command -v "$LLAMA_SERVER" >/dev/null 2>&1 || die "llama-server not found. Install llama.cpp first."
@@ -569,8 +642,7 @@ cmd_start_llama() {
   else
     log "Starting primary server: $PRIMARY_HF"
     log "  Port: $llama_primary_port | Context: $PRIMARY_CTX | Slots: $PRIMARY_SLOTS"
-    log "  Draft: $DRAFT_HF | Speculative: ngram-mod (n=$NGRAM_SIZE, max=$DRAFT_MAX, min=$DRAFT_MIN)"
-    log "  GPU: all layers | Flash attn: $FLASH_ATTN | KV cache: $KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V (draft: $DRAFT_KV_TYPE_K/$DRAFT_KV_TYPE_V)"
+    log "  GPU: all layers | Flash attn: $FLASH_ATTN | KV cache: $KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V"
     log "  Batch: $BATCH_SIZE/$UBATCH_SIZE | Threads: $THREADS (gen) / $THREADS_BATCH (batch) | Poll: $POLL"
     log "  Priority: $PRIO (gen) / $PRIO_BATCH (batch) | No-warmup: on | No-mmproj: on | Metrics: on"
     log "  Sampling (Unsloth precise coding): temp=$SAMPLING_TEMP top_p=$SAMPLING_TOP_P top_k=$SAMPLING_TOP_K"
@@ -578,19 +650,11 @@ cmd_start_llama() {
     nohup "$LLAMA_SERVER" \
       -hf "$PRIMARY_HF" \
       --no-mmproj \
-      -hfd "$DRAFT_HF" \
-      --draft-max "$DRAFT_MAX" \
-      --draft-min "$DRAFT_MIN" \
-      --spec-type ngram-mod \
-      --spec-ngram-size-n "$NGRAM_SIZE" \
       --ctx-size "$PRIMARY_CTX" \
       -ngl "$GPU_LAYERS" \
-      -ngld "$GPU_LAYERS_DRAFT" \
       -fa "$FLASH_ATTN" \
       -ctk "$KV_CACHE_TYPE_K" \
       -ctv "$KV_CACHE_TYPE_V" \
-      -ctkd "$DRAFT_KV_TYPE_K" \
-      -ctvd "$DRAFT_KV_TYPE_V" \
       -cb \
       -b "$BATCH_SIZE" \
       -ub "$UBATCH_SIZE" \
@@ -670,8 +734,8 @@ cmd_start_llama() {
   # ── Health checks ──
   log ""
   log "Waiting for servers to load models (first run downloads from HuggingFace)..."
-  log "  Primary: ~21 GB (35B-A3B UD-Q4_K_XL) + ~3 GB (4B draft)"
-  log "  Sidecar: ~6 GB (9B)"
+  log "  Primary: ~45 GB (35B-A3B UD-Q8_K_XL)"
+  log "  Sidecar: ~12 GB (9B UD-Q8_K_XL)"
   log ""
 
   local primary_ok=false sidecar_ok=false
@@ -745,7 +809,7 @@ cmd_status() {
     any_running=true
     local pid
     pid=$(get_pid "$PRIMARY_PID")
-    local llama_primary_port="${PI_PRIMARY_PORT:-8080}"
+    local llama_primary_port="${PI_PRIMARY_PORT:-$(read_port llama-cpp primary || echo 8090)}"
     local health
     health=$(curl -sf "http://localhost:${llama_primary_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
     log "  LLAMA PRIMARY  PID=$pid  port=$llama_primary_port  health=$health"
@@ -765,7 +829,7 @@ print(f'{busy}/{total} slots busy')
     any_running=true
     local pid
     pid=$(get_pid "$SIDECAR_PID")
-    local llama_sidecar_port="${PI_SIDECAR_PORT:-8081}"
+    local llama_sidecar_port="${PI_SIDECAR_PORT:-$(read_port llama-cpp sidecar || echo 8091)}"
     local health
     health=$(curl -sf "http://localhost:${llama_sidecar_port}/health" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unreachable")
     log "  LLAMA SIDECAR  PID=$pid  port=$llama_sidecar_port  health=$health"
@@ -786,7 +850,7 @@ print(f'{busy}/{total} slots busy')
     any_running=true
     local pid
     pid=$(get_pid "$MLX_PRIMARY_PID")
-    local mlx_primary_port="${PI_PRIMARY_PORT:-8090}"
+    local mlx_primary_port="${PI_PRIMARY_PORT:-$(read_port mlx primary || echo 8080)}"
     local health
     health=$(curl -sf "http://localhost:${mlx_primary_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
     log "  MLX PRIMARY    PID=$pid  port=$mlx_primary_port  health=$health  source=$resolved_primary_source"
@@ -796,7 +860,7 @@ print(f'{busy}/{total} slots busy')
     any_running=true
     local pid
     pid=$(get_pid "$MLX_SIDECAR_PID")
-    local mlx_sidecar_port="${PI_SIDECAR_PORT:-8091}"
+    local mlx_sidecar_port="${PI_SIDECAR_PORT:-$(read_port mlx sidecar || echo 8081)}"
     local health
     health=$(curl -sf "http://localhost:${mlx_sidecar_port}/v1/models" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok' if 'data' in d else '?')" 2>/dev/null || echo "unreachable")
     log "  MLX SIDECAR    PID=$pid  port=$mlx_sidecar_port  health=$health  source=$resolved_sidecar_source"
@@ -804,16 +868,6 @@ print(f'{busy}/{total} slots busy')
 
   if ! $any_running; then
     log "  No servers running"
-  fi
-
-  # Show speculative decoding stats from primary log (llama-cpp only)
-  if is_running "$PRIMARY_PID" && [[ -f "$PRIMARY_LOG" ]]; then
-    local spec_stats
-    spec_stats=$(grep -oE 'accept rate: [0-9.]+%' "$PRIMARY_LOG" 2>/dev/null | tail -1 || echo "")
-    if [[ -n "$spec_stats" ]]; then
-      log ""
-      log "  Speculative decoding: $spec_stats"
-    fi
   fi
 }
 
@@ -859,13 +913,14 @@ cmd_logs() {
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 case "${1:-}" in
-  start)   cmd_start "${2:-}" ;;
-  stop)    cmd_stop ;;
-  restart) cmd_restart "${2:-}" ;;
-  status)  cmd_status ;;
-  logs)    cmd_logs "${2:-all}" ;;
+  start)      cmd_start "${2:-}" ;;
+  stop)       cmd_stop ;;
+  restart)    cmd_restart "${2:-}" ;;
+  status)     cmd_status ;;
+  logs)       cmd_logs "${2:-all}" ;;
+  sync-ports) sync_ports ;;
   *)
-    echo "Usage: $(basename "$0") {start [mlx|llama-cpp]|stop|restart|status|logs [primary|sidecar|all]}"
+    echo "Usage: $(basename "$0") {start [mlx|llama-cpp]|stop|restart|status|logs [primary|sidecar|all]|sync-ports}"
     exit 1
     ;;
 esac

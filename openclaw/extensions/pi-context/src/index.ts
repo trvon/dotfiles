@@ -548,6 +548,60 @@ function findLatestMessageText(payload: any, role: string): string {
   return "";
 }
 
+function heuristicMemoryChunks(userPrompt: string, assistantText: string, storeLimit: number): MemoryChunk[] {
+  const chunks: MemoryChunk[] = [];
+  const user = truncate(normalizeText(userPrompt), 500);
+  const assistant = truncate(normalizeText(assistantText), 700);
+  if (user) {
+    chunks.push({
+      chunkType: "objective",
+      content: `User request: ${user}`,
+    });
+  }
+  if (assistant) {
+    chunks.push({
+      chunkType: "assistant_finding",
+      content: `Assistant outcome: ${assistant}`,
+    });
+  }
+  return chunks.slice(0, Math.max(1, storeLimit));
+}
+
+function stopHeartbeatLoop(): void {
+  const timer = (globalThis as any).__piContextHeartbeatTimer;
+  if (timer) {
+    clearInterval(timer);
+    delete (globalThis as any).__piContextHeartbeatTimer;
+  }
+}
+
+function startHeartbeatLoop(api: PluginApi, cfg: PluginConfig, sessions: Map<string, SessionState>, ctx?: any): void {
+  stopHeartbeatLoop();
+  const pollMs = Math.max(30_000, Number(cfg.activityHeartbeatPollMs || 300_000));
+  const timer = setInterval(async () => {
+    const now = Date.now();
+    for (const [sessionKey, session] of sessions.entries()) {
+      if (!shouldHeartbeatRefresh(session, cfg, now)) continue;
+      try {
+        const query = session.lastQuery || session.lastRawPrompt;
+        const hints = await searchRlm(cfg, query, session.sessionTag);
+        session.lastHints = hints;
+        session.lastRlmAt = Date.now();
+        ctx?.logger?.info?.(`[pi-context] activity heartbeat refreshed RLM for ${sessionKey} (hits=${hints.length})`);
+      } catch (error: any) {
+        ctx?.logger?.warn?.(
+          `[pi-context] activity heartbeat refresh failed for ${sessionKey}: ${String(error?.message || error)}`
+        );
+      }
+    }
+  }, pollMs);
+  (globalThis as any).__piContextHeartbeatTimer = timer;
+  log(api, "info", "activity heartbeat loop started", {
+    pollMs,
+    mode: typeof api?.registerService === "function" ? "service" : "fallback",
+  });
+}
+
 export default function piContextPlugin(api: PluginApi): void {
   const cfg = getPluginConfig(api);
   const sessions = new Map<string, SessionState>();
@@ -640,79 +694,88 @@ export default function piContextPlugin(api: PluginApi): void {
     },
   });
 
-  if (cfg.enabledRlm) {
-    registerHook(api, "before_prompt_build", async (payload: any) => {
-      try {
-        const prompt = extractPrompt(payload);
-        const sessionKey = getSessionKey(payload);
-        const session = ensureSession(sessionKey);
-        session.lastActivityAt = Date.now();
-        log(api, "debug", "before_prompt_build received payload", {
-          sessionKey,
-          hasPrompt: Boolean(prompt.trim()),
-          messageCount: Array.isArray(payload?.messages) ? payload.messages.length : 0,
-          payloadKeys: Object.keys(payload || {}).slice(0, 20),
-        });
-        if (!prompt.trim()) return null;
-        const refinedQuery = await refineQueryWithSidecar(cfg, prompt);
-        log(api, "info", "recall query built", {
-          sessionKey,
-          sessionTag: session.sessionTag,
-          sidecarModel: cfg.sidecarModel,
-          rawPromptChars: prompt.length,
-          refinedQueryChars: refinedQuery.length,
-        });
-        const hints = await searchRlm(cfg, refinedQuery, session.sessionTag);
-        session.lastRawPrompt = prompt;
-        session.lastQuery = refinedQuery;
-        session.lastHints = hints;
-        session.lastRlmAt = Date.now();
-        log(api, "info", "recall search complete", {
-          sessionKey,
-          sessionTag: session.sessionTag,
-          yamsCwd: cfg.yamsCwd,
-          hits: hints.length,
-          queryPreview: truncate(refinedQuery, 180),
-        });
-        const prependParts: string[] = [];
-        if (hints.length > 0) {
-          prependParts.push(
-            [
-              "[Pi Context Recall]",
-              `Background model: ${cfg.sidecarModel}`,
-              "Recalled session/global memory from YAMS. Treat these as candidate evidence and verify against current files and tool output.",
-              formatHints(hints),
-            ].join("\n\n")
-          );
-        }
+  const runRecall = async (payload: any, hookName: string) => {
+    try {
+      const prompt = extractPrompt(payload);
+      const sessionKey = getSessionKey(payload);
+      const session = ensureSession(sessionKey);
+      session.lastActivityAt = Date.now();
+      log(api, "info", `${hookName} received payload`, {
+        sessionKey,
+        hasPrompt: Boolean(prompt.trim()),
+        messageCount: Array.isArray(payload?.messages) ? payload.messages.length : 0,
+        payloadKeys: Object.keys(payload || {}).slice(0, 20),
+      });
+      if (!prompt.trim()) return null;
+      const refinedQuery = await refineQueryWithSidecar(cfg, prompt);
+      log(api, "info", "recall query built", {
+        hookName,
+        sessionKey,
+        sessionTag: session.sessionTag,
+        sidecarModel: cfg.sidecarModel,
+        rawPromptChars: prompt.length,
+        refinedQueryChars: refinedQuery.length,
+      });
+      const hints = await searchRlm(cfg, refinedQuery, session.sessionTag);
+      session.lastRawPrompt = prompt;
+      session.lastQuery = refinedQuery;
+      session.lastHints = hints;
+      session.lastRlmAt = Date.now();
+      log(api, "info", "recall search complete", {
+        hookName,
+        sessionKey,
+        sessionTag: session.sessionTag,
+        yamsCwd: cfg.yamsCwd,
+        hits: hints.length,
+        queryPreview: truncate(refinedQuery, 180),
+      });
 
-        if (shouldUseRecovery(session, cfg)) {
-          const recoveryContext = buildRecoveryContext(session);
-          if (recoveryContext) {
-            prependParts.push(recoveryContext);
-            session.retryCount += 1;
-            session.lastRecoveryAt = Date.now();
-            log(api, "warn", "continuity watchdog injected recovery context", {
-              sessionTag: session.sessionTag,
-              retryCount: session.retryCount,
-              maxRetries: cfg.continuityMaxRetries,
-              reason: session.pendingRecovery?.reason,
-            });
-            session.pendingRecovery = null;
-          }
-        }
-
-        if (prependParts.length === 0) return null;
-        return {
-          prependSystemContext: prependParts.join("\n\n"),
-        };
-      } catch (error) {
-        log(api, "warn", "before_prompt_build recall failed", error);
-        return null;
+      const prependParts: string[] = [];
+      if (hints.length > 0) {
+        prependParts.push(
+          [
+            "[Pi Context Recall]",
+            `Background model: ${cfg.sidecarModel}`,
+            "Recalled session/global memory from YAMS. Treat these as candidate evidence and verify against current files and tool output.",
+            formatHints(hints),
+          ].join("\n\n")
+        );
       }
-    }, {
+
+      if (shouldUseRecovery(session, cfg)) {
+        const recoveryContext = buildRecoveryContext(session);
+        if (recoveryContext) {
+          prependParts.push(recoveryContext);
+          session.retryCount += 1;
+          session.lastRecoveryAt = Date.now();
+          log(api, "warn", "continuity watchdog injected recovery context", {
+            sessionTag: session.sessionTag,
+            retryCount: session.retryCount,
+            maxRetries: cfg.continuityMaxRetries,
+            reason: session.pendingRecovery?.reason,
+          });
+          session.pendingRecovery = null;
+        }
+      }
+
+      if (prependParts.length === 0) return null;
+      return {
+        prependSystemContext: prependParts.join("\n\n"),
+      };
+    } catch (error) {
+      log(api, "warn", `${hookName} recall failed`, error);
+      return null;
+    }
+  };
+
+  if (cfg.enabledRlm) {
+    registerHook(api, "before_prompt_build", async (payload: any) => runRecall(payload, "before_prompt_build"), {
       name: "pi-context.before-prompt-build",
       description: "Inject YAMS-based recalled context before prompt assembly",
+    });
+    registerHook(api, "before_agent_start", async (payload: any) => runRecall(payload, "before_agent_start"), {
+      name: "pi-context.before-agent-start",
+      description: "Fallback YAMS recall hook before agent start",
     });
   }
 
@@ -724,10 +787,12 @@ export default function piContextPlugin(api: PluginApi): void {
         session.lastActivityAt = Date.now();
         const userPrompt = findLatestMessageText(payload, "user") || session.lastRawPrompt;
         const assistantText = findLatestMessageText(payload, "assistant");
-        log(api, "debug", "agent_end received payload", {
+        log(api, "info", "agent_end received payload", {
           sessionKey,
           hasUserPrompt: Boolean(userPrompt.trim()),
           hasAssistantText: Boolean(assistantText.trim()),
+          userPromptChars: userPrompt.length,
+          assistantChars: assistantText.length,
           payloadKeys: Object.keys(payload || {}).slice(0, 20),
         });
         if (cfg.continuityWatchdogEnabled) {
@@ -751,7 +816,19 @@ export default function piContextPlugin(api: PluginApi): void {
         }
         if (!userPrompt.trim() || !assistantText.trim()) return null;
 
-        const chunks = await extractMemoryChunksWithSidecar(cfg, userPrompt, assistantText);
+        let chunks = await extractMemoryChunksWithSidecar(cfg, userPrompt, assistantText);
+        log(api, "info", "sidecar extraction result", {
+          sessionTag: session.sessionTag,
+          sidecarModel: cfg.sidecarModel,
+          chunks: chunks.length,
+        });
+        if (chunks.length === 0) {
+          chunks = heuristicMemoryChunks(userPrompt, assistantText, cfg.storeLimit);
+          log(api, "warn", "sidecar extraction empty; using heuristic fallback", {
+            sessionTag: session.sessionTag,
+            heuristicChunks: chunks.length,
+          });
+        }
         log(api, "info", "auto-store extraction complete", {
           sessionTag: session.sessionTag,
           sidecarModel: cfg.sidecarModel,
@@ -805,35 +882,14 @@ export default function piContextPlugin(api: PluginApi): void {
     api.registerService({
       id: "pi-context.activity-heartbeat",
       start: async (ctx: any) => {
-        const pollMs = Math.max(30_000, Number(cfg.activityHeartbeatPollMs || 300_000));
-        const timer = setInterval(async () => {
-          const now = Date.now();
-          for (const [sessionKey, session] of sessions.entries()) {
-            if (!shouldHeartbeatRefresh(session, cfg, now)) continue;
-            try {
-              const query = session.lastQuery || session.lastRawPrompt;
-              const hints = await searchRlm(cfg, query, session.sessionTag);
-              session.lastHints = hints;
-              session.lastRlmAt = Date.now();
-              ctx?.logger?.info?.(
-                `[pi-context] activity heartbeat refreshed RLM for ${sessionKey} (hits=${hints.length})`
-              );
-            } catch (error: any) {
-              ctx?.logger?.warn?.(
-                `[pi-context] activity heartbeat refresh failed for ${sessionKey}: ${String(error?.message || error)}`
-              );
-            }
-          }
-        }, pollMs);
-        (globalThis as any).__piContextHeartbeatTimer = timer;
+        startHeartbeatLoop(api, cfg, sessions, ctx);
       },
       stop: async () => {
-        const timer = (globalThis as any).__piContextHeartbeatTimer;
-        if (timer) {
-          clearInterval(timer);
-          delete (globalThis as any).__piContextHeartbeatTimer;
-        }
+        stopHeartbeatLoop();
       },
     });
+  } else if (cfg.activityHeartbeatEnabled) {
+    log(api, "warn", "registerService unavailable; starting fallback activity heartbeat loop");
+    startHeartbeatLoop(api, cfg, sessions);
   }
 }

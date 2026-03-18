@@ -1,0 +1,79 @@
+{
+  "id": "searx-search",
+  "name": "SearX Search",
+  "description": "Local SearXNG-backed search tools for OpenClaw cron and agents.",
+  "version": "0.0.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "baseUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8888"
+      },
+      "defaultLanguage": {
+        "type": "string",
+        "default": "en-US"
+      },
+      "safeSearch": {
+        "type": "integer",
+        "enum": [
+          0,
+          1,
+          2
+        ],
+        "default": 1
+      },
+      "defaultMaxResults": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 25,
+        "default": 8
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 30000,
+        "default": 10000
+      },
+      "engines": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "duckduckgo",
+          "brave",
+          "qwant"
+        ]
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enable SearX Search"
+    },
+    "baseUrl": {
+      "label": "SearX Base URL"
+    },
+    "defaultLanguage": {
+      "label": "Default Language"
+    },
+    "safeSearch": {
+      "label": "Safe Search (0/1/2)"
+    },
+    "defaultMaxResults": {
+      "label": "Default Max Results"
+    },
+    "timeoutMs": {
+      "label": "Timeout (ms)"
+    },
+    "engines": {
+      "label": "Default Engines"
+    }
+  }
+}

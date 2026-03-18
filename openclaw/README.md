@@ -75,6 +75,38 @@ Recommended plugin config for this repo:
 }
 ```
 
+## SearXNG + Search Plugin
+
+This repo now includes a local SearXNG service and custom OpenClaw plugin:
+
+- service: `openclaw-searxng` on `http://127.0.0.1:8888`
+- plugin: `openclaw/extensions/searx-search`
+
+Start stack:
+
+```bash
+docker compose -f openclaw/compose.yml up -d searxng jan-openclaw
+```
+
+Install plugin:
+
+```bash
+openclaw plugins install ./openclaw/extensions/searx-search
+```
+
+Verify tools:
+
+```bash
+openclaw tool run searx_status '{}'
+openclaw tool run searx_search '{"query":"ios zero day","maxResults":5}'
+```
+
+Canary rollout suggestion:
+
+1. Update `urgent-news-search` prompt to prefer `searx_search`
+2. Keep built-in `web_search` as fallback in prompts during canary
+3. Expand to research/threat/mobile search jobs after 24-48h stable runs
+
 ## Notes
 
 - For WhatsApp in Docker, use `/home/node/.openclaw/whatsapp_auth` as the auth dir.

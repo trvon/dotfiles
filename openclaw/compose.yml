@@ -19,8 +19,12 @@ services:
       - /home/node/.cache:rw,exec,nosuid,size=512m
     volumes:
       - ${HOME}/.openclaw/sandbox/docker:/home/node/.openclaw
+      - ${HOME}/.openclaw/sandbox/docker:/Users/trevon/.openclaw/sandbox/docker
       - ${HOME}/research:/workspace/research
-      - ${HOME}/Documents/depend/dotfiles:/home/node/.openclaw/workspace
+      - ${HOME}/research:/Users/trevon/research
+      - ${HOME}/Documents/depend/dotfiles:/workspace/dotfiles
+      - ${HOME}/Documents/depend/dotfiles:/Users/trevon/Documents/depend/dotfiles
+      - /var/run/docker.sock:/var/run/docker.sock
 
   searxng:
     image: searxng/searxng:latest
@@ -29,12 +33,11 @@ services:
     ports:
       - 127.0.0.1:8888:8080
     environment:
-      - BASE_URL=http://127.0.0.1:8888/
-      - INSTANCE_NAME=openclaw-searxng
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
     volumes:
-      - ${HOME}/Documents/depend/dotfiles/openclaw/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ${HOME}/Documents/depend/dotfiles/openclaw/searxng:/etc/searxng
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/search?q=health&format=json"]
+      test: ["CMD-SHELL", "wget --header='X-Forwarded-For: 127.0.0.1' --header='X-Real-IP: 127.0.0.1' -qO- 'http://127.0.0.1:8080/search?q=health&format=json' >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 5

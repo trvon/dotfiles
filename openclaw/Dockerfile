@@ -1,7 +1,8 @@
 FROM debian:sid-slim
 
-ARG NODE_VERSION=22.14.0
-ARG OPENCLAW_VERSION=2026.3.12
+ARG TARGETARCH
+ARG NODE_VERSION=24.14.0
+ARG OPENCLAW_VERSION=2026.3.13
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV OPENCLAW_CONFIG=/home/node/.openclaw/openclaw.json
@@ -19,6 +20,7 @@ RUN echo "Acquire::http::Pipeline-Depth 0; \
 
 RUN apt-get -o Acquire::Retries=5 update \
   && apt-get install -y \
+    docker.io \
     ca-certificates \
     curl \
     dirmngr \
@@ -39,13 +41,19 @@ RUN apt-get -o Acquire::Retries=5 update \
   && apt-get -o Acquire::Retries=5 update \
   && apt-get install -y \
     yams \
-  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz" \
+  && case "${TARGETARCH}" in \
+      amd64) NODE_ARCH=x64 ;; \
+      arm64) NODE_ARCH=arm64 ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
     -o /tmp/node.tar.xz \
   && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
   && rm -f /tmp/node.tar.xz \
   && node --version \
   && npm --version \
   && npm install -g "openclaw@${OPENCLAW_VERSION}" \
+  && openclaw --version \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 

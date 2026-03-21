@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Local Pi extensions – deps pinned to Pi 0.56.0",
+  "overrides": {
+    "fast-xml-parser": "5.5.8",
+    "file-type": "21.3.3"
+  },
   "dependencies": {
     "@mariozechner/pi-ai": "0.56.0",
     "@mariozechner/pi-coding-agent": "0.56.0"

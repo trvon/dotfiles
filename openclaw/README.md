@@ -4,6 +4,7 @@ Local focused OpenClaw container
 
 - `yams` preinstalled from the YAMS apt repo
 - OpenClaw installed from npm and pinned by build arg
+- Docker CLI preinstalled so OpenClaw can launch child sandbox containers
 
 ## Build
 
@@ -15,9 +16,10 @@ docker build -t openclaw-yams:local -f openclaw/Dockerfile .
 docker rm -f jan-openclaw 2>/dev/null || true
 
 mkdir -p ~/.openclaw/sandbox/docker
+mkdir -p ~/.openclaw/sandbox/docker/sandboxes
 mkdir -p ~/research
 
-docker compose -f openclaw/compose.yml up -d
+docker compose -f openclaw/compose.yml up -d --build
 ```
 
 If you want to keep using `docker run`, this already has the right recovery flag:
@@ -35,10 +37,16 @@ docker run -d \
   --tmpfs /home/node/.npm:rw,exec,nosuid,size=512m \
   --tmpfs /home/node/.cache:rw,exec,nosuid,size=512m \
   -v ~/.openclaw/sandbox/docker:/home/node/.openclaw \
+  -v ~/.openclaw/sandbox/docker:/Users/trevon/.openclaw/sandbox/docker \
   -v ~/research:/workspace/research \
+  -v ~/research:/Users/trevon/research \
   -v ~/Documents/depend/dotfiles:/workspace/dotfiles \
+  -v ~/Documents/depend/dotfiles:/Users/trevon/Documents/depend/dotfiles \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   openclaw-yams:local
 ```
+
+The duplicate absolute-path mounts are intentional: Docker-backed child sandboxes need host-real paths that exist identically inside the gateway container.
 
 ## Pi Context Plugin
 
@@ -111,4 +119,4 @@ Canary rollout suggestion:
 
 - For WhatsApp in Docker, use `/home/node/.openclaw/whatsapp_auth` as the auth dir.
 - Mount your own working data separately, for example `~/research:/workspace/research`.
-- Running as `root` is intentional for a mutable dev container. Tighten this later if needed.
+- Running as `root` is intentional here so OpenClaw can access `/var/run/docker.sock` and launch child sandboxes.

@@ -1,5 +1,8 @@
 services:
   jan-openclaw:
+    build:
+      context: ..
+      dockerfile: openclaw/Dockerfile
     image: openclaw-yams:local
     container_name: jan-openclaw
     restart: unless-stopped

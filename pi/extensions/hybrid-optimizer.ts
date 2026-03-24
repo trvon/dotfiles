@@ -68,14 +68,16 @@ const ORACLE_INACTIVITY_MS = parsePositiveInt(process.env.PI_ORACLE_INACTIVITY_M
 
 const MIN_PROMPT_CHARS_FOR_OPTIMIZER = parsePositiveInt(process.env.PI_OPTIMIZER_MIN_CHARS, 120);
 const OPTIMIZER_MAX_TOKENS = parsePositiveInt(process.env.PI_OPTIMIZER_MAX_TOKENS, 700);
-const OPTIMIZER_INACTIVITY_MS = parsePositiveInt(process.env.PI_OPTIMIZER_INACTIVITY_MS, 20000);
+const OPTIMIZER_INACTIVITY_MS = parsePositiveInt(process.env.PI_OPTIMIZER_INACTIVITY_MS, 45000);
+const OPTIMIZER_WALL_TIMEOUT_MS = parsePositiveInt(process.env.PI_OPTIMIZER_WALL_TIMEOUT_MS, 70000);
 const UI_PROGRESS_NOTIFY_MS = parsePositiveInt(process.env.PI_HYBRID_UI_PROGRESS_NOTIFY_MS, 1500);
 const AUTO_THINKING = parseBoolean(process.env.PI_HYBRID_AUTO_THINKING, true);
 const YAMS_ENABLED = parseBoolean(process.env.PI_HYBRID_YAMS_ENABLED, true);
 const PROFILE_EMBED_ROUTER = parseBoolean(process.env.PI_HYBRID_PROFILE_EMBED_ROUTER, true);
 const YAMS_LIMIT = parsePositiveInt(process.env.PI_HYBRID_YAMS_LIMIT, 4);
 const YAMS_TIMEOUT_MS = parsePositiveInt(process.env.PI_HYBRID_YAMS_TIMEOUT_MS, 12000);
-const ALLOW_LOOSE_PARSE = parseBoolean(process.env.PI_HYBRID_ALLOW_LOOSE_PARSE, false);
+const ALLOW_LOOSE_PARSE = parseBoolean(process.env.PI_HYBRID_ALLOW_LOOSE_PARSE, true);
+const OPTIMIZER_INPUT_MAX_CHARS = parsePositiveInt(process.env.PI_OPTIMIZER_INPUT_MAX_CHARS, 4000);
 const FORWARD_OPTIMIZED_MESSAGE = parseBoolean(process.env.PI_HYBRID_FORWARD_OPTIMIZED_MESSAGE, true);
 const FORWARD_PROMPT_MAX_CHARS = parsePositiveInt(process.env.PI_HYBRID_FORWARD_PROMPT_MAX_CHARS, 1200);
 const SHOW_PROMPT_PAIR = parseBoolean(process.env.PI_HYBRID_SHOW_PROMPT_PAIR, true);
@@ -83,7 +85,7 @@ const PROMPT_PREVIEW_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_PREVI
 const PROMPT_STATE_CHARS = parsePositiveInt(process.env.PI_HYBRID_PROMPT_STATE_CHARS, 2400);
 const TRACE_FILE = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/hybrid-optimizer.jsonl`;
 
-const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.75);
+const COMPACTION_RATIO = parseRatio(process.env.PI_HYBRID_COMPACTION_RATIO, 0.85);
 let COMPACTION_MIN_TOKENS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_MIN_TOKENS, 128000);
 const COMPACTION_COOLDOWN_MS = parsePositiveInt(process.env.PI_HYBRID_COMPACTION_COOLDOWN_MS, 180000);
 const COMPACTION_SAFETY_HEADROOM_TOKENS = parsePositiveInt(
@@ -100,19 +102,21 @@ const CAP_OLD_ASSISTANT_TEXT_CHARS = parsePositiveInt(process.env.PI_HYBRID_CAP_
 // --- RLM (Retrieval-augmented Long Memory) ---
 const RLM_ENABLED = parseBoolean(process.env.PI_RLM_ENABLED, true);
 const RLM_COLLECTION = process.env.PI_RLM_COLLECTION || "pi-session-memory";
-const RLM_STORE_TAGS = "rlm,pi-session-memory";
+const RLM_GLOBAL_TAG = process.env.PI_RLM_GLOBAL_TAG || "rlm-hybrid";
+const RLM_STORE_TAGS = `${RLM_GLOBAL_TAG},pi-session-memory`;
 const RLM_MAX_CHUNKS_PER_COMPACTION = parsePositiveInt(process.env.PI_RLM_MAX_CHUNKS, 5);
 const RLM_MAX_CHUNK_CHARS = parsePositiveInt(process.env.PI_RLM_MAX_CHUNK_CHARS, 2000);
 const RLM_RETRIEVE_LIMIT = parsePositiveInt(process.env.PI_RLM_RETRIEVE_LIMIT, 3);
 const RLM_RETRIEVE_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_RETRIEVE_TIMEOUT_MS, 8000);
 const RLM_STORE_TIMEOUT_MS = parsePositiveInt(process.env.PI_RLM_STORE_TIMEOUT_MS, 10000);
-const RLM_MIN_SCORE = 0.003;
+const RLM_BASE_MIN_SCORE = parseFloat(process.env.PI_RLM_BASE_MIN_SCORE || "0.003") || 0.003;
 const RLM_SEARCH_SIMILARITY = process.env.PI_RLM_SEARCH_SIMILARITY || "0.001";
 const RLM_MAX_HINTS_IN_PROMPT = 3;
 const RLM_MAX_HINT_SNIPPET_CHARS = 400;
+const RLM_DYNAMIC_POLICY = parseBoolean(process.env.PI_RLM_DYNAMIC_POLICY, true);
 
-// RLM extractor mode: "heuristic" (default) or "model" (uses sidecar LLM)
-const RLM_EXTRACTOR_MODE = (process.env.PI_RLM_EXTRACTOR_MODE || "heuristic") as "heuristic" | "model";
+// RLM extractor mode: "model" (default, uses sidecar LLM) or "heuristic" (string parsing)
+const RLM_EXTRACTOR_MODE = (process.env.PI_RLM_EXTRACTOR_MODE || "model") as "heuristic" | "model";
 const ENV_RLM_EXTRACTOR_PROVIDER = (process.env.PI_RLM_EXTRACTOR_PROVIDER || "").trim();
 const ENV_RLM_EXTRACTOR_MODEL = (process.env.PI_RLM_EXTRACTOR_MODEL || "").trim();
 const RLM_EXTRACTOR_MAX_TOKENS = parsePositiveInt(process.env.PI_RLM_EXTRACTOR_MAX_TOKENS, 1200);
@@ -185,6 +189,73 @@ function parseRatio(value: string | undefined, fallback: number): number {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) return fallback;
   return parsed;
+}
+
+const rlmPolicyState: {
+  minScore: number;
+  retrievalCounts: number[];
+  noiseRates: number[];
+} = {
+  minScore: RLM_BASE_MIN_SCORE,
+  retrievalCounts: [],
+  noiseRates: [],
+};
+
+function currentRlmMinScore(): number {
+  return RLM_DYNAMIC_POLICY ? rlmPolicyState.minScore : RLM_BASE_MIN_SCORE;
+}
+
+function scoreRlmHint(hint: RlmMemoryHint): number {
+  const typeWeight = (() => {
+    const t = hint.chunkType.toLowerCase();
+    if (t === "decision" || t === "objective") return 0.12;
+    if (t === "assistant-finding" || t === "code-change") return 0.08;
+    if (t === "user-request") return 0.05;
+    if (t === "tool-outcome" || t === "file-context" || t === "unknown") return -0.05;
+    return 0;
+  })();
+  return hint.score + typeWeight;
+}
+
+function rankRlmHints(hints: RlmMemoryHint[]): RlmMemoryHint[] {
+  return [...hints].sort((a, b) => scoreRlmHint(b) - scoreRlmHint(a));
+}
+
+function adaptRlmPolicy(hints: RlmMemoryHint[]): void {
+  if (!RLM_DYNAMIC_POLICY) return;
+  const count = hints.length;
+  const noisy = hints.filter((h) => {
+    const t = h.chunkType.toLowerCase();
+    return t === "unknown" || t === "tool-outcome" || t === "file-context";
+  }).length;
+  const noiseRate = count > 0 ? noisy / count : 1;
+
+  rlmPolicyState.retrievalCounts.push(count);
+  rlmPolicyState.noiseRates.push(noiseRate);
+  if (rlmPolicyState.retrievalCounts.length > 40) rlmPolicyState.retrievalCounts.shift();
+  if (rlmPolicyState.noiseRates.length > 40) rlmPolicyState.noiseRates.shift();
+
+  const zeroRate =
+    rlmPolicyState.retrievalCounts.length > 0
+      ? rlmPolicyState.retrievalCounts.filter((v) => v === 0).length / rlmPolicyState.retrievalCounts.length
+      : 0;
+  const avgNoise =
+    rlmPolicyState.noiseRates.length > 0
+      ? rlmPolicyState.noiseRates.reduce((a, b) => a + b, 0) / rlmPolicyState.noiseRates.length
+      : 0;
+
+  if (avgNoise >= 0.6) {
+    rlmPolicyState.minScore = Math.min(0.009, rlmPolicyState.minScore + 0.0005);
+  } else if (zeroRate >= 0.7) {
+    rlmPolicyState.minScore = Math.max(0.0015, rlmPolicyState.minScore - 0.0004);
+  } else {
+    const target = RLM_BASE_MIN_SCORE;
+    if (rlmPolicyState.minScore < target) {
+      rlmPolicyState.minScore = Math.min(target, rlmPolicyState.minScore + 0.0002);
+    } else if (rlmPolicyState.minScore > target) {
+      rlmPolicyState.minScore = Math.max(target, rlmPolicyState.minScore - 0.0002);
+    }
+  }
 }
 
 // --- Adaptive threshold scaling ---
@@ -463,6 +534,7 @@ function shouldBypassOptimizer(prompt: string): boolean {
   const p = prompt.toLowerCase();
   if (p.includes("sage_search") && p.includes("\"results\"")) return true;
   if (p.includes("error: terminated") || p.includes("operation aborted")) return true;
+  if (prompt.length > 3500 && (p.includes("warning:") || p.includes("error:") || p.includes("compiling c++ object"))) return true;
   if (p.length > 12000 && (p.includes("\"results\"") || p.includes("tool_call") || p.includes("received request"))) return true;
   return false;
 }
@@ -908,6 +980,7 @@ function restoreState(ctx: ExtensionContext): OptimizerState {
 
 function shouldSkipPrompt(prompt: string): boolean {
   if (!prompt.trim()) return true;
+  if (!stripWrapperBlocks(prompt)) return true;
   const prefixes = ["[health-watchdog:auto-retry]", "[health-watchdog:cron]"];
   return prefixes.some((prefix) => prompt.startsWith(prefix));
 }
@@ -1103,6 +1176,7 @@ async function optimizeWithModel(
   }
 
   const carryContext = state.carry.length > 0 ? state.carry.map((line) => `- ${line}`).join("\n") : "- none";
+  const promptForOptimizer = truncate(prompt, OPTIMIZER_INPUT_MAX_CHARS);
 
   const userMessage = [
     "You are a prompt optimizer for a coding agent.",
@@ -1134,7 +1208,7 @@ async function optimizeWithModel(
     "Current carry context:",
     carryContext,
     "User prompt:",
-    prompt,
+    promptForOptimizer,
   ].join("\n");
 
   const optimizerMaxTokens =
@@ -1157,6 +1231,7 @@ async function optimizeWithModel(
       provider: activeProvider,
       modelId: model.id,
       promptChars: prompt.length,
+      promptSentChars: promptForOptimizer.length,
       contextPressure: contextSteering?.pressure || "unknown",
       optimizerMaxTokens,
     });
@@ -1174,20 +1249,34 @@ async function optimizeWithModel(
 
     let succeeded = false;
     try {
-      const response = await completeWithInactivityTimeout(
-        model,
-        {
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: userMessage }],
-              timestamp: Date.now(),
-            },
-          ],
-        },
-        { apiKey, maxTokens: optimizerMaxTokens, signal },
-        OPTIMIZER_INACTIVITY_MS
-      );
+      const wallController = new AbortController();
+      const wallTimer = setTimeout(() => wallController.abort(), OPTIMIZER_WALL_TIMEOUT_MS);
+      const onCallerAbort = () => wallController.abort();
+      if (signal) {
+        if (signal.aborted) wallController.abort();
+        else signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+
+      let response: any;
+      try {
+        response = await completeWithInactivityTimeout(
+          model,
+          {
+            messages: [
+              {
+                role: "user",
+                content: [{ type: "text", text: userMessage }],
+                timestamp: Date.now(),
+              },
+            ],
+          },
+          { apiKey, maxTokens: optimizerMaxTokens, signal: wallController.signal },
+          OPTIMIZER_INACTIVITY_MS
+        );
+      } finally {
+        clearTimeout(wallTimer);
+        if (signal) signal.removeEventListener("abort", onCallerAbort);
+      }
 
       const { text, source: textSource } = extractResponseText(response);
       if (textSource === "thinking") {
@@ -1234,6 +1323,18 @@ async function optimizeWithModel(
       });
       succeeded = true;
       return { result: parsed, modelId: model.id };
+    } catch (error: any) {
+      trace("optimizer_model_error", {
+        provider: activeProvider,
+        modelId: model.id,
+        reason: error?.message?.includes("inactivity_timeout")
+          ? "inactivity_timeout"
+          : error?.name === "AbortError"
+            ? "wall_timeout_or_aborted"
+            : "error",
+        message: String(error?.message || error).slice(0, 200),
+      });
+      continue;
     } finally {
       if (progressTimer) clearTimeout(progressTimer);
       if (ctx.hasUI) {
@@ -1242,7 +1343,7 @@ async function optimizeWithModel(
         if (longRunningNotified) {
           ctx.ui.notify(succeeded
             ? `Hybrid optimizer finished (${model.id}).`
-            : `Hybrid optimizer failed to parse (${model.id}), trying next...`);
+            : `Hybrid optimizer did not complete (${model.id}), trying next...`);
         }
       }
     }
@@ -1629,7 +1730,7 @@ function parseRlmSearchResults(
     for (const r of results) {
       if (
         typeof r.score === "number" &&
-        r.score >= RLM_MIN_SCORE &&
+        r.score >= currentRlmMinScore() &&
         typeof r.snippet === "string" &&
         r.snippet.length > 0
       ) {
@@ -1637,10 +1738,15 @@ function parseRlmSearchResults(
         const dedupeKey = String(r.id || r.path || r.snippet.slice(0, 80));
         if (seenIds.has(dedupeKey)) continue;
         seenIds.add(dedupeKey);
+        let chunkType = r.metadata?.chunk_type;
+        if (!chunkType && typeof r.path === "string") {
+          const pathMatch = r.path.match(/-t\d+-([\w][\w-]*)-\d+$/);
+          if (pathMatch) chunkType = pathMatch[1];
+        }
         hints.push({
           snippet: r.snippet.replace(/\s+/g, " ").trim(),
           score: r.score,
-          chunkType: r.metadata?.chunk_type || "unknown",
+          chunkType: chunkType || "unknown",
         });
       }
     }
@@ -1654,7 +1760,7 @@ function parseRlmSearchResults(
  * Retrieve relevant session memory chunks from YAMS.
  * Two-phase tiered retrieval:
  *   Phase 1: Session-scoped results (tag: session:<sessionId>) -- prioritize current session context.
- *   Phase 2: Global RLM results (tag: rlm) -- fill remaining slots with cross-session long-term memory.
+ *   Phase 2: Global RLM results (tag: RLM_GLOBAL_TAG) -- fill remaining slots with cross-session long-term memory.
  * Deduplication ensures no snippet appears twice.
  */
 async function fetchRlmMemory(
@@ -1710,7 +1816,7 @@ async function fetchRlmMemory(
           "search",
           "--json",
           "--tags",
-          "rlm",
+          RLM_GLOBAL_TAG,
           "--similarity",
           RLM_SEARCH_SIMILARITY,
           "--limit",
@@ -1728,7 +1834,7 @@ async function fetchRlmMemory(
     }
   }
 
-  return allHints.slice(0, RLM_RETRIEVE_LIMIT);
+  return rankRlmHints(allHints).slice(0, RLM_RETRIEVE_LIMIT);
 }
 
 // ---------------------------------------------------------------------------
@@ -1925,6 +2031,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
   let rlmUnavailableNotified = false;
   let rlmDcsEnriched = false;
   let dcsEnrichmentText: string | null = null;
+  let rlmExtractionInFlight = false;
 
   function setStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
@@ -1977,15 +2084,18 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     pi.appendEntry("hybrid-optimizer-state", state);
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     state = restoreState(ctx);
     yamsUnavailableNotified = false;
-    rlmSessionId = `pi-${Date.now().toString(36)}`;
+    rlmSessionId = (event as any)?.sessionId || `pi-${Date.now().toString(36)}`;
     rlmTurnCounter = 0;
     rlmLastMemoryHints = [];
     rlmUnavailableNotified = false;
     rlmDcsEnriched = false;
     dcsEnrichmentText = null;
+    rlmPolicyState.minScore = RLM_BASE_MIN_SCORE;
+    rlmPolicyState.retrievalCounts = [];
+    rlmPolicyState.noiseRates = [];
     const configuredContextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : null;
     const primaryModelId = resolvePrimaryModelId(ctx);
     const contextWindowOverride = parsePositiveInt(process.env.PI_HYBRID_CONTEXT_WINDOW_OVERRIDE, 0);
@@ -2014,6 +2124,7 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
       rlmExtractorMode: RLM_EXTRACTOR_MODE,
       rlmExtractorModel: RLM_EXTRACTOR_MODE === "model" ? rlmExtractorModelId : null,
       rlmSessionId,
+      rlmMinScore: currentRlmMinScore(),
       dcsSessionEnrichment: RLM_DCS_SESSION_ENRICHMENT,
       optimizations: state.optimizations,
       optimizerAttempts: state.optimizerAttempts,
@@ -2070,67 +2181,75 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
   // RLM: Extract and store memory chunks before compaction evicts messages
   pi.on("session_before_compact", async (event, ctx) => {
     if (!RLM_ENABLED) return; // Don't interfere with compaction-guard
+    if (rlmExtractionInFlight) {
+      trace("rlm_extraction_skipped", { reason: "in_flight" });
+      return;
+    }
 
     const prep = (event as any).preparation;
     const messages = prep?.messagesToSummarize;
     if (!Array.isArray(messages) || messages.length === 0) return;
 
     rlmTurnCounter += 1;
+    const turnNumber = rlmTurnCounter;
+    const messagesSnapshot = messages.slice();
 
-    let chunks: RlmChunk[];
-    let extractionSource: "model" | "heuristic" | "model-fallback" = "heuristic";
+    rlmExtractionInFlight = true;
+    void (async () => {
+      try {
+        let chunks: RlmChunk[];
+        let extractionSource: "model" | "heuristic" | "model-fallback" = "heuristic";
 
-    if (RLM_EXTRACTOR_MODE === "model") {
-      const modelChunks = await extractMemoryChunksWithModel(ctx, messages, state);
-      if (modelChunks !== null) {
-        chunks = modelChunks;
-        extractionSource = "model";
-      } else {
-        // Model failed/unavailable, fall back to heuristic
-        chunks = extractMemoryChunks(messages, state);
-        extractionSource = "model-fallback";
-        trace("rlm_extractor_fallback", { reason: "model_returned_null", turnNumber: rlmTurnCounter });
-      }
-    } else {
-      chunks = extractMemoryChunks(messages, state);
-    }
+        if (RLM_EXTRACTOR_MODE === "model") {
+          const modelChunks = await extractMemoryChunksWithModel(ctx, messagesSnapshot, state);
+          if (modelChunks !== null) {
+            chunks = modelChunks;
+            extractionSource = "model";
+          } else {
+            // Model failed/unavailable, fall back to heuristic
+            chunks = extractMemoryChunks(messagesSnapshot, state);
+            extractionSource = "model-fallback";
+            trace("rlm_extractor_fallback", { reason: "model_returned_null", turnNumber });
+          }
+        } else {
+          chunks = extractMemoryChunks(messagesSnapshot, state);
+        }
 
-    if (chunks.length === 0) {
-      trace("rlm_extraction", {
-        chunkCount: 0,
-        messagesProcessed: messages.length,
-        turnNumber: rlmTurnCounter,
-        extractionSource,
-      });
-      return;
-    }
+        if (chunks.length === 0) {
+          trace("rlm_extraction", {
+            chunkCount: 0,
+            messagesProcessed: messagesSnapshot.length,
+            turnNumber,
+            extractionSource,
+          });
+          return;
+        }
 
-    trace("rlm_extraction", {
-      chunkCount: chunks.length,
-      messagesProcessed: messages.length,
-      turnNumber: rlmTurnCounter,
-      chunkTypes: chunks.map((c) => c.type),
-      extractionSource,
-    });
-    notify(ctx, `RLM: extracting ${chunks.length} memory chunks (${extractionSource}) from ${messages.length} evicted messages.`);
+        trace("rlm_extraction", {
+          chunkCount: chunks.length,
+          messagesProcessed: messagesSnapshot.length,
+          turnNumber,
+          chunkTypes: chunks.map((c) => c.type),
+          extractionSource,
+        });
+        notify(ctx, `RLM: extracting ${chunks.length} memory chunks (${extractionSource}) from ${messagesSnapshot.length} evicted messages.`);
 
-    // Fire-and-forget: store in background, don't block compaction
-    storeMemoryChunks(pi, chunks, rlmSessionId, rlmTurnCounter, state.objective).then(
-      (result) => {
-        trace("rlm_store_complete", { ...result, turnNumber: rlmTurnCounter });
+        const result = await storeMemoryChunks(pi, chunks, rlmSessionId, turnNumber, state.objective);
+        trace("rlm_store_complete", { ...result, turnNumber });
         if (result.stored > 0) {
           notify(ctx, `RLM: stored ${result.stored} memory chunks in YAMS (session ${rlmSessionId}).`);
         }
         if (result.failed > 0) {
           notify(ctx, `RLM: ${result.failed} chunk(s) failed to store.`, "warning");
         }
-      },
-      (error) => {
-        trace("rlm_store_error", { error: String(error), turnNumber: rlmTurnCounter });
+      } catch (error) {
+        trace("rlm_store_error", { error: String(error), turnNumber });
+      } finally {
+        rlmExtractionInFlight = false;
       }
-    );
+    })();
 
-    // Return undefined — compaction-guard handles actual compaction behavior
+    // Return immediately — compaction-guard handles compaction behavior.
   });
 
   pi.registerCommand("hybrid", {
@@ -2605,16 +2724,27 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     if (RLM_ENABLED && !signal?.aborted) {
       try {
         const rlmHints = await fetchRlmMemory(pi, effectivePrompt, state, rlmSessionId, signal);
+        adaptRlmPolicy(rlmHints);
         if (rlmHints.length > 0) {
           rlmLastMemoryHints = rlmHints;
-          trace("rlm_retrieve", { count: rlmHints.length, topScore: rlmHints[0]?.score });
+          const noisyCount = rlmHints.filter((h) => {
+            const t = h.chunkType.toLowerCase();
+            return t === "unknown" || t === "tool-outcome" || t === "file-context";
+          }).length;
+          trace("rlm_retrieve", {
+            count: rlmHints.length,
+            topScore: rlmHints[0]?.score,
+            noisyCount,
+            minScore: currentRlmMinScore(),
+            globalTag: RLM_GLOBAL_TAG,
+          });
           rlmUnavailableNotified = false;
         } else {
           rlmLastMemoryHints = [];
-          trace("rlm_retrieve", { count: 0 });
+          trace("rlm_retrieve", { count: 0, minScore: currentRlmMinScore(), globalTag: RLM_GLOBAL_TAG });
         }
       } catch (error) {
-        trace("rlm_retrieve", { count: 0, error: "fetch_failed" });
+        trace("rlm_retrieve", { count: 0, error: "fetch_failed", minScore: currentRlmMinScore(), globalTag: RLM_GLOBAL_TAG });
         if (!rlmUnavailableNotified) {
           rlmUnavailableNotified = true;
           notify(ctx, "RLM session memory unavailable, continuing without recalled context.", "warning");

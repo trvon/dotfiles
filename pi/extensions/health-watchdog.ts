@@ -45,6 +45,10 @@ type WatchdogConfig = {
   modelExtraMaxMs: number;
   maxRetries: number;
   retryCooldownMs: number;
+  retryBackoffMaxMs: number;
+  rateLimitRetryBaseMs: number;
+  rateLimitRetryMaxMs: number;
+  rateLimitMaxRetries: number;
   notify: boolean;
   cronConfigPath: string;
   verifyBeforeRetry: boolean;
@@ -99,6 +103,10 @@ const DEFAULT_CONFIG: WatchdogConfig = {
   modelExtraMaxMs: 900_000,
   maxRetries: 2,
   retryCooldownMs: 30_000,
+  retryBackoffMaxMs: 300_000,
+  rateLimitRetryBaseMs: 60_000,
+  rateLimitRetryMaxMs: 900_000,
+  rateLimitMaxRetries: 5,
   notify: true,
   cronConfigPath: `${homedir()}/.pi/agent/health-watchdog-cron.json`,
   verifyBeforeRetry: true,
@@ -274,6 +282,25 @@ function isTerminationLike(stopReason: unknown, summary: string): boolean {
 function isErrorLikeStopReason(stopReason: unknown): boolean {
   const reason = typeof stopReason === "string" ? stopReason.trim().toLowerCase() : "";
   return ["error", "abort", "aborted", "terminated", "cancel", "cancelled"].some((token) => reason.includes(token));
+}
+
+function isRateLimitLike(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("rate limit") ||
+    lower.includes("retry shortly") ||
+    lower.includes("traffic is currently high") ||
+    lower.includes("too many requests") ||
+    lower.includes("429") ||
+    lower.includes("(2062)")
+  );
+}
+
+function computeBackoffMs(baseMs: number, attempt: number, maxMs: number): number {
+  const exp = Math.max(0, attempt - 1);
+  const raw = baseMs * Math.pow(2, exp);
+  const jitter = 0.85 + Math.random() * 0.3;
+  return Math.min(maxMs, Math.round(raw * jitter));
 }
 
 function hashText(input: string): string {
@@ -553,6 +580,22 @@ function makeConfigFromEnv(): WatchdogConfig {
       process.env.PI_HEALTH_WATCHDOG_RETRY_COOLDOWN_MS,
       DEFAULT_CONFIG.retryCooldownMs
     ),
+    retryBackoffMaxMs: parsePositiveInt(
+      process.env.PI_HEALTH_WATCHDOG_RETRY_BACKOFF_MAX_MS,
+      DEFAULT_CONFIG.retryBackoffMaxMs
+    ),
+    rateLimitRetryBaseMs: parsePositiveInt(
+      process.env.PI_HEALTH_WATCHDOG_RATELIMIT_RETRY_BASE_MS,
+      DEFAULT_CONFIG.rateLimitRetryBaseMs
+    ),
+    rateLimitRetryMaxMs: parsePositiveInt(
+      process.env.PI_HEALTH_WATCHDOG_RATELIMIT_RETRY_MAX_MS,
+      DEFAULT_CONFIG.rateLimitRetryMaxMs
+    ),
+    rateLimitMaxRetries: parsePositiveInt(
+      process.env.PI_HEALTH_WATCHDOG_RATELIMIT_MAX_RETRIES,
+      DEFAULT_CONFIG.rateLimitMaxRetries
+    ),
     notify: parseBoolean(process.env.PI_HEALTH_WATCHDOG_NOTIFY, DEFAULT_CONFIG.notify),
     cronConfigPath: process.env.PI_HEALTH_WATCHDOG_CRON_FILE || DEFAULT_CONFIG.cronConfigPath,
     verifyBeforeRetry: parseBoolean(
@@ -608,6 +651,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
   let agentRunning = false;
   let lastProgressAt = Date.now();
   let lastRetryAt = 0;
+  let nextAllowedRetryAt = 0;
   let retryCount = 0;
   let recovering = false;
   let turnRunning = false;
@@ -1037,8 +1081,14 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
 
     if (!stalled) return;
 
-    const cooldownElapsed = now - lastRetryAt >= config.retryCooldownMs;
-    if (!cooldownElapsed) return;
+    if (now < nextAllowedRetryAt) {
+      trace("retry_suppressed_backoff", {
+        reason: "cooldown",
+        remainingMs: nextAllowedRetryAt - now,
+        retryCount,
+      });
+      return;
+    }
 
     if (stallKind === "model" && turnStartedAt > 0) {
       const turnElapsedMs = now - turnStartedAt;
@@ -1094,6 +1144,12 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
 
     retryCount += 1;
     lastRetryAt = Date.now();
+    const retryDelayMs = computeBackoffMs(
+      config.retryCooldownMs,
+      retryCount,
+      config.retryBackoffMaxMs
+    );
+    nextAllowedRetryAt = lastRetryAt + retryDelayMs;
     recovering = true;
     setWatchdogStatus(ctx);
     trace("retry_triggered", {
@@ -1101,13 +1157,14 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       retryCount,
       maxRetries: config.maxRetries,
       effectiveModelStallMs,
+      nextRetryAfterMs: retryDelayMs,
     });
 
     notify(
       ctx,
       stallKind === "model"
-        ? `Health watchdog: model stall detected (>${Math.round(effectiveModelStallMs / 1000)}s), retry ${retryCount}/${config.maxRetries}.`
-        : `Health watchdog: tool stall detected, retry ${retryCount}/${config.maxRetries}.`,
+        ? `Health watchdog: model stall detected (>${Math.round(effectiveModelStallMs / 1000)}s), retry ${retryCount}/${config.maxRetries}. Backoff ${Math.round(retryDelayMs / 1000)}s.`
+        : `Health watchdog: tool stall detected, retry ${retryCount}/${config.maxRetries}. Backoff ${Math.round(retryDelayMs / 1000)}s.`,
       "warning"
     );
 
@@ -1308,21 +1365,28 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     }
 
     const now = Date.now();
-    if (now - lastRetryAt < Math.max(config.retryCooldownMs, config.terminationCooldownMs)) {
+    const rateLimitLike = isRateLimitLike(candidate.summary) || isRateLimitLike(candidate.stopReason);
+    const effectiveMaxRetries = rateLimitLike
+      ? Math.max(config.maxRetries, config.rateLimitMaxRetries)
+      : config.maxRetries;
+    if (now < nextAllowedRetryAt) {
       trace("termination_recovery_suppressed", {
-        reason: "cooldown",
+        reason: "backoff",
         source,
         stopReason: candidate.stopReason,
+        remainingMs: nextAllowedRetryAt - now,
       });
       return;
     }
 
-    if (retryCount >= config.maxRetries) {
+    if (retryCount >= effectiveMaxRetries) {
       trace("termination_recovery_suppressed", {
         reason: "max_retries",
         source,
         stopReason: candidate.stopReason,
         retryCount,
+        maxRetries: effectiveMaxRetries,
+        rateLimitLike,
       });
       return;
     }
@@ -1372,6 +1436,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       mode: config.terminationMode,
       shouldRetry,
       reason: decisionReason,
+      rateLimitLike,
       stopReason: candidate.stopReason,
       assistantChars: candidate.assistantChars,
       priorAssistantChars: candidate.priorAssistantChars,
@@ -1383,6 +1448,14 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
 
     retryCount += 1;
     lastRetryAt = now;
+    const baseDelayMs = rateLimitLike
+      ? Math.max(config.terminationCooldownMs, config.rateLimitRetryBaseMs)
+      : Math.max(config.terminationCooldownMs, config.retryCooldownMs);
+    const maxDelayMs = rateLimitLike
+      ? config.rateLimitRetryMaxMs
+      : config.retryBackoffMaxMs;
+    const retryDelayMs = computeBackoffMs(baseDelayMs, retryCount, maxDelayMs);
+    nextAllowedRetryAt = now + retryDelayMs;
     lastTerminationSignatureRetried = candidate.signature;
     recovering = true;
     setWatchdogStatus(ctx);
@@ -1390,19 +1463,22 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       source,
       stopReason: candidate.stopReason,
       retryCount,
-      maxRetries: config.maxRetries,
+      maxRetries: effectiveMaxRetries,
       summary: candidate.summary.slice(0, 220),
+      rateLimitLike,
+      nextRetryAfterMs: retryDelayMs,
     });
 
     notify(
       ctx,
-      `Health watchdog: detected termination signal, retry ${retryCount}/${config.maxRetries}.`,
+      `Health watchdog: detected termination signal, retry ${retryCount}/${effectiveMaxRetries}.${rateLimitLike ? ` Rate-limit backoff ${Math.round(retryDelayMs / 1000)}s.` : ` Backoff ${Math.round(retryDelayMs / 1000)}s.`}`,
       "warning"
     );
 
     const retryPrompt = [
-      `${RETRY_PREFIX} ${retryCount}/${config.maxRetries}`,
+      `${RETRY_PREFIX} ${retryCount}/${effectiveMaxRetries}`,
       "The previous run terminated and may be incomplete. Continue only unfinished work and avoid repeating completed sections.",
+      ...(rateLimitLike ? ["Rate-limit recovery mode: reduce request concurrency and keep the continuation narrow."] : []),
       `Original user request: ${activePrompt}`,
     ].join("\n");
 
@@ -1502,6 +1578,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     const verifierModel = resolveVerifierModel(ctx);
     touch();
     retryCount = 0;
+    lastRetryAt = 0;
+    nextAllowedRetryAt = 0;
     verifierUnavailableNotified = false;
     verifierInFlight = false;
     pendingTermination = null;
@@ -1537,6 +1615,11 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       finalTailGraceMs: FINAL_TAIL_GRACE_MS,
       toolStallAfterMs: config.toolStallAfterMs,
       modelStallAfterMs: config.modelStallAfterMs,
+      retryCooldownMs: config.retryCooldownMs,
+      retryBackoffMaxMs: config.retryBackoffMaxMs,
+      rateLimitRetryBaseMs: config.rateLimitRetryBaseMs,
+      rateLimitRetryMaxMs: config.rateLimitRetryMaxMs,
+      rateLimitMaxRetries: config.rateLimitMaxRetries,
     });
     scheduleCronJobs(ctx);
     setWatchdogStatus(ctx);
@@ -1939,6 +2022,7 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
       const summaryLines = [
         `watchdog active=${agentRunning ? "yes" : "no"} turn=${turnRunning ? "running" : "idle"} tool=${toolRunning ? "running" : "idle"}`,
         `retries=${retryCount}/${config.maxRetries} finalTail=${finalTailPending ? "pending" : "clear"} verifier=${verifierInFlight ? "running" : "idle"}`,
+        `nextRetryIn=${Math.max(0, nextAllowedRetryAt - nowMs)}ms baseCooldown=${config.retryCooldownMs}ms`,
         `verifierModel=${verifierModel} recoverOnTermination=${config.recoverOnTermination ? "on" : "off"}`,
         `recent(${Math.round(WATCHDOG_COMMAND_WINDOW_MS / 60000)}m) pseudo=${stats.pseudoToolCalls.recent} semantic=${stats.semanticToolFailures.recent} retries=${stats.retries.recent} recoveries=${stats.recoveries.recent} suppressions=${stats.suppressions.recent}`,
       ];
@@ -1990,6 +2074,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     if (!isSynthetic) {
       activePrompt = prompt;
       retryCount = 0;
+      lastRetryAt = 0;
+      nextAllowedRetryAt = 0;
       pendingTermination = null;
       lastTerminationSignatureRetried = "";
       latestUserPromptAt = Date.now();
@@ -2019,6 +2105,8 @@ export default function healthWatchdogExtension(pi: ExtensionAPI): void {
     assistantMessageStartedAt = 0;
     lastToolProgressAt = 0;
     verifierInFlight = false;
+    lastRetryAt = 0;
+    nextAllowedRetryAt = 0;
     pendingTermination = null;
     lastAssistantSummaryInTurn = "";
     lastAssistantSummaryAt = 0;

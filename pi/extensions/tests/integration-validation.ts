@@ -22,7 +22,8 @@ import { tmpdir } from "node:os";
 
 const SESSION_ID = `integ-test-${Date.now().toString(36)}`;
 const COLLECTION = "pi-session-memory";
-const TAGS_BASE = "rlm,pi-session-memory";
+const GLOBAL_TAG = process.env.PI_CHUNK_GLOBAL_TAG || "rlm-semantic";
+const TAGS_BASE = `${GLOBAL_TAG},pi-session-memory`;
 const MIN_SCORE = 0.003;
 const SIMILARITY = "0.001";
 
@@ -341,7 +342,7 @@ async function main() {
   if (remaining > 0) {
     const globalSearchResult = yams([
       "search", "--json",
-      "--tags", "rlm",
+      "--tags", GLOBAL_TAG,
       "--similarity", SIMILARITY,
       "--limit", String(remaining + 2),
       query,

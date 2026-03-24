@@ -1,12 +1,15 @@
 /**
  * model-backend.ts — Shared model-state provider abstraction.
  *
- * Probes MLX (127.0.0.1:8080), llama-cpp (127.0.0.1:8090), and
- * LlamaBarn (127.0.0.1:2276) to detect which backend is running and
- * retrieve model state / loaded context info.
+ * Probes MLX (127.0.0.1:8080), llama-cpp (127.0.0.1:8090),
+ * LM Studio (127.0.0.1:1234), and LlamaBarn (127.0.0.1:2276) to detect
+ * which backend is running and retrieve model state / loaded context info.
  *
- * Auto-detection: probes all three in parallel, uses first responder.
- * Override: PI_MODEL_BACKEND=mlx | llama-cpp | llamabarn | auto (default: auto).
+ * Primary model: MiniMax M2.7 Highspeed (cloud API, no probe needed).
+ * Sidecar models: LM Studio (local, OpenAI-compatible /v1 endpoint).
+ *
+ * Auto-detection: probes all four in parallel, uses first responder.
+ * Override: PI_MODEL_BACKEND=mlx | llama-cpp | lmstudio | llamabarn | auto (default: auto).
  *
  * Also provides sidecar model configuration: reads the `sidecar` section from
  * models.json and returns per-role model IDs for the active provider.
@@ -27,7 +30,7 @@ import path from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
-export type BackendName = "llamabarn" | "llama-cpp" | "mlx" | "unknown";
+export type BackendName = "llamabarn" | "llama-cpp" | "mlx" | "lmstudio" | "unknown";
 
 export interface ModelInfo {
   /** Which backend answered */
@@ -108,6 +111,8 @@ const MLX_PRIMARY_HEALTH_URL =
   process.env.PI_MLX_PRIMARY_HEALTH_URL || "http://127.0.0.1:8080/health";
 const MLX_PRIMARY_MODELS_URL =
   process.env.PI_MLX_PRIMARY_MODELS_URL || "http://127.0.0.1:8080/v1/models";
+const LMSTUDIO_MODELS_URL =
+  process.env.PI_LMSTUDIO_MODELS_URL || "http://127.0.0.1:1234/v1/models";
 const PROBE_TIMEOUT_MS = parsePositiveInt(process.env.PI_MODEL_BACKEND_TIMEOUT_MS, 2500);
 
 // ---------------------------------------------------------------------------
@@ -170,16 +175,15 @@ function readDefaultProvider(): string {
 
 /**
  * Default sidecar model IDs when `sidecar` section is absent or missing a
- * provider.  Uses generic model IDs that match the llama-cpp sidecar config
- * (the expected default backend).
+ * provider. Uses the canonical LM Studio Qwen 9B ID.
  */
 const DEFAULT_SIDECAR: SidecarConfig = {
-  optimizer: "qwen3.5-9b",
-  optimizerFallback: "qwen3.5-9b",
-  researchOptimizer: "qwen3.5-9b",
+  optimizer: "qwen_qwen3.5-9b",
+  optimizerFallback: "qwen_qwen3.5-9b",
+  researchOptimizer: "qwen_qwen3.5-9b",
   oracle: "",                    // empty → falls back to primary model
-  rlmExtractor: "qwen3.5-9b",
-  compaction: "qwen3.5-9b",
+  rlmExtractor: "qwen_qwen3.5-9b",
+  compaction: "qwen_qwen3.5-9b",
   verifier: "",                  // empty → falls back to primary model
   critic: "",                    // empty → falls back to primary model
 };
@@ -227,7 +231,7 @@ function readSidecarMap(): Record<string, SidecarConfig> {
 /**
  * Get sidecar model configuration for the given provider.
  *
- * Falls back to DEFAULT_SIDECAR (generic qwen3.5-9b defaults) if the
+ * Falls back to DEFAULT_SIDECAR (canonical qwen_qwen3.5-9b defaults) if the
  * provider has no entry in models.json `sidecar` section.
  */
 export function getSidecarConfig(provider: string): SidecarConfig {
@@ -360,11 +364,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-function parseBackendPref(value: string | undefined): "llamabarn" | "llama-cpp" | "mlx" | "auto" {
+function parseBackendPref(value: string | undefined): "llamabarn" | "llama-cpp" | "mlx" | "lmstudio" | "auto" {
   const v = (value || "").trim().toLowerCase();
   if (v === "llamabarn" || v === "barn") return "llamabarn";
   if (v === "llama-cpp" || v === "llamacpp" || v === "lcpp") return "llama-cpp";
   if (v === "mlx") return "mlx";
+  if (v === "lmstudio" || v === "lms") return "lmstudio";
   return "auto";
 }
 
@@ -652,6 +657,64 @@ function mlxModelIdMatches(wantedId: string, mlxId: string): boolean {
   return wantedName === mlxBase || wantedName === mlxName;
 }
 
+// ---------------------------------------------------------------------------
+// LM Studio provider (127.0.0.1:1234, OpenAI-compatible /v1 endpoint)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe LM Studio via its OpenAI-compatible /v1/models endpoint.
+ *
+ * LM Studio returns model objects with IDs that may include publisher
+ * prefixes (e.g. "qwen_qwen3.5-27b" or "mistralai/devstral-small-2-2512").
+ * We fuzzy-match against models.json IDs the same way as other backends.
+ */
+async function probeLmStudio(
+  modelId: string,
+  timeoutMs: number
+): Promise<ModelInfo | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(LMSTUDIO_MODELS_URL, { signal: controller.signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as any;
+    const rows: Array<{ id?: string }> = Array.isArray(data?.data) ? data.data : [];
+
+    let resolvedModelId: string | null = null;
+    for (const row of rows) {
+      const candidate = String(row.id || "");
+      if (modelIdMatches(modelId, { id: candidate })) {
+        resolvedModelId = candidate;
+        break;
+      }
+    }
+    // Fallback: try case-insensitive substring match (LM Studio IDs vary)
+    if (!resolvedModelId) {
+      const wanted = modelId.trim().toLowerCase();
+      for (const row of rows) {
+        const candidate = String(row.id || "").toLowerCase();
+        if (candidate.includes(wanted) || wanted.includes(candidate)) {
+          resolvedModelId = String(row.id || "");
+          break;
+        }
+      }
+    }
+
+    return {
+      backend: "lmstudio",
+      state: resolvedModelId ? "loaded" : "not-found",
+      // LM Studio doesn't expose context size via API
+      loadedContextLength: null,
+      maxContextLength: null,
+      resolvedModelId,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function inferModelSource(modelInfo: ModelInfo): "local-path" | "repo-or-cache" | "unknown" {
   const raw = typeof modelInfo?.resolvedModelId === "string" ? modelInfo.resolvedModelId.trim() : "";
   if (!raw) return "unknown";
@@ -670,7 +733,7 @@ export function inferModelSource(modelInfo: ModelInfo): "local-path" | "repo-or-
  * Resolution order:
  *   1. If PI_MODEL_BACKEND is set, only probe that backend.
  *   2. Otherwise probe all four in parallel; return the first to respond
- *      with a loaded model.  Priority on tie: mlx > llama-cpp > llamabarn.
+ *      with a loaded model.  Priority on tie: mlx > llama-cpp > lmstudio > llamabarn.
  */
 export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
   const fallback: ModelInfo = {
@@ -691,21 +754,27 @@ export async function fetchModelInfo(modelId: string): Promise<ModelInfo> {
   if (BACKEND_PREFERENCE === "mlx") {
     return (await probeMlx(modelId, PROBE_TIMEOUT_MS)) ?? fallback;
   }
+  if (BACKEND_PREFERENCE === "lmstudio") {
+    return (await probeLmStudio(modelId, PROBE_TIMEOUT_MS)) ?? fallback;
+  }
 
   // auto: probe all in parallel
-  const [mlx, lcpp, barn] = await Promise.all([
+  const [mlx, lcpp, barn, lms] = await Promise.all([
     probeMlx(modelId, PROBE_TIMEOUT_MS),
     probeLlamaCpp(modelId, PROBE_TIMEOUT_MS),
     probeLlamaBarn(modelId, PROBE_TIMEOUT_MS),
+    probeLmStudio(modelId, PROBE_TIMEOUT_MS),
   ]);
 
-  // Prefer whichever found the model in a loaded state (mlx first, then llama-cpp)
+  // Prefer whichever found the model in a loaded state (mlx first, then llama-cpp, lmstudio)
   if (mlx && mlx.state === "loaded") return mlx;
   if (lcpp && lcpp.state === "loaded") return lcpp;
+  if (lms && lms.state === "loaded") return lms;
   if (barn && barn.state === "loaded") return barn;
   // Then prefer whichever responded at all
   if (mlx) return mlx;
   if (lcpp) return lcpp;
+  if (lms) return lms;
   if (barn) return barn;
 
   return fallback;
@@ -725,15 +794,17 @@ export async function fetchLoadedContextWindow(modelId: string): Promise<number 
  * Detect which backend(s) are reachable (for diagnostic display).
  */
 export async function detectBackends(): Promise<BackendStatus[]> {
-  const [mlx, lcpp, barn] = await Promise.all([
+  const [mlx, lcpp, barn, lms] = await Promise.all([
     isReachable(MLX_PRIMARY_HEALTH_URL, PROBE_TIMEOUT_MS),
     isReachable(LLAMACPP_PRIMARY_HEALTH_URL, PROBE_TIMEOUT_MS),
     isReachable(LLAMABARN_MODELS_URL, PROBE_TIMEOUT_MS),
+    isReachable(LMSTUDIO_MODELS_URL, PROBE_TIMEOUT_MS),
   ]);
   const results: BackendStatus[] = [];
   results.push({ backend: "mlx", reachable: mlx });
   results.push({ backend: "llama-cpp", reachable: lcpp });
   results.push({ backend: "llamabarn", reachable: barn });
+  results.push({ backend: "lmstudio", reachable: lms });
   return results;
 }
 
@@ -742,15 +813,17 @@ export async function detectBackends(): Promise<BackendStatus[]> {
  */
 export async function fetchModelInfoAll(modelId: string): Promise<ModelInfo[]> {
   if (!modelId) return [];
-  const [mlx, lcpp, barn] = await Promise.all([
+  const [mlx, lcpp, barn, lms] = await Promise.all([
     probeMlx(modelId, PROBE_TIMEOUT_MS),
     probeLlamaCpp(modelId, PROBE_TIMEOUT_MS),
     probeLlamaBarn(modelId, PROBE_TIMEOUT_MS),
+    probeLmStudio(modelId, PROBE_TIMEOUT_MS),
   ]);
   const results: ModelInfo[] = [];
   if (mlx) results.push(mlx);
   if (lcpp) results.push(lcpp);
   if (barn) results.push(barn);
+  if (lms) results.push(lms);
   return results;
 }
 

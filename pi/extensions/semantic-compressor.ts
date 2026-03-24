@@ -13,13 +13,16 @@ const TRACE_ENABLED = parseBoolean(process.env.PI_CONTEXT_CHUNKER_TRACE_ENABLED,
 
 // YAMS collection / tag constants (compatible with hybrid-optimizer RLM)
 const CHUNK_COLLECTION = process.env.PI_CHUNK_COLLECTION || "pi-session-memory";
-const CHUNK_STORE_TAGS = "rlm,pi-session-memory";
+const CHUNK_GLOBAL_TAG = process.env.PI_CHUNK_GLOBAL_TAG || "rlm-semantic";
+const CHUNK_STORE_TAGS = `${CHUNK_GLOBAL_TAG},pi-session-memory`;
 const CHUNK_STORE_TIMEOUT_MS = parsePositiveInt(process.env.PI_CHUNK_STORE_TIMEOUT_MS, 10000);
 const CHUNK_RETRIEVE_TIMEOUT_MS = parsePositiveInt(process.env.PI_CHUNK_RETRIEVE_TIMEOUT_MS, 8000);
 const CHUNK_RETRIEVE_LIMIT = parsePositiveInt(process.env.PI_CHUNK_RETRIEVE_LIMIT, 6);
-const CHUNK_MIN_SCORE = 0.003;
+const CHUNK_BASE_MIN_SCORE = parseFloat(process.env.PI_CHUNK_BASE_MIN_SCORE || "0.003") || 0.003;
 const CHUNK_SEARCH_SIMILARITY = process.env.PI_CHUNK_SEARCH_SIMILARITY || "0.001";
 const CHUNK_MAX_CHARS = parsePositiveInt(process.env.PI_CHUNK_MAX_CHARS, 2000);
+const CHUNK_DYNAMIC_POLICY = parseBoolean(process.env.PI_CHUNK_DYNAMIC_POLICY, true);
+const CHUNK_NOVELTY_WINDOW = parsePositiveInt(process.env.PI_CHUNK_NOVELTY_WINDOW, 120);
 
 // Chunking behavior
 const CHUNK_MAX_PER_TURN = parsePositiveInt(process.env.PI_CHUNK_MAX_PER_TURN, 8);
@@ -228,6 +231,196 @@ type RetrievedChunk = {
   score: number;
   chunkType: string;
 };
+
+type PolicyPressure = "normal" | "high";
+
+type StoredChunkFingerprint = {
+  type: ChunkType;
+  normalized: string;
+};
+
+const TYPE_BASE_SCORE: Record<ChunkType, number> = {
+  objective: 0.95,
+  "user-request": 0.9,
+  "assistant-finding": 0.72,
+  "file-context": 0.45,
+  "tool-outcome": 0.22,
+  "code-change": 0.82,
+  decision: 1.0,
+};
+
+const dynamicPolicyState: {
+  minScore: number;
+  toolQuota: number;
+  retrievalCounts: number[];
+  noiseRates: number[];
+  recentFingerprints: StoredChunkFingerprint[];
+} = {
+  minScore: CHUNK_BASE_MIN_SCORE,
+  toolQuota: 1,
+  retrievalCounts: [],
+  noiseRates: [],
+  recentFingerprints: [],
+};
+
+function currentMinScore(): number {
+  return CHUNK_DYNAMIC_POLICY ? dynamicPolicyState.minScore : CHUNK_BASE_MIN_SCORE;
+}
+
+function normalizeForNovelty(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^a-z0-9\s._/-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const as = new Set(a.split(" ").filter((t) => t.length >= 3));
+  const bs = new Set(b.split(" ").filter((t) => t.length >= 3));
+  if (as.size === 0 || bs.size === 0) return 0;
+  let inter = 0;
+  for (const t of as) if (bs.has(t)) inter += 1;
+  return inter / (as.size + bs.size - inter);
+}
+
+function perTypeBudget(maxChunks: number, pressure: PolicyPressure): Record<ChunkType, number> {
+  const base: Record<ChunkType, number> = {
+    objective: 1,
+    "user-request": 2,
+    "assistant-finding": 2,
+    "file-context": 1,
+    "tool-outcome": dynamicPolicyState.toolQuota,
+    "code-change": 2,
+    decision: 2,
+  };
+  if (pressure === "high") {
+    base.objective = 1;
+    base["user-request"] = 1;
+    base["assistant-finding"] = 1;
+    base["file-context"] = 1;
+    base["tool-outcome"] = 0;
+    base["code-change"] = 1;
+    base.decision = 2;
+  }
+  if (maxChunks <= 4) {
+    base["assistant-finding"] = Math.min(base["assistant-finding"], 1);
+    base["code-change"] = Math.min(base["code-change"], 1);
+  }
+  return base;
+}
+
+function chunkScore(chunk: ContextChunk): number {
+  const base = TYPE_BASE_SCORE[chunk.type] ?? 0.5;
+  const lengthBoost = Math.min(0.15, chunk.content.length / 3000);
+  return base + lengthBoost;
+}
+
+function rememberChunks(chunks: ContextChunk[]): void {
+  for (const chunk of chunks) {
+    dynamicPolicyState.recentFingerprints.push({
+      type: chunk.type,
+      normalized: normalizeForNovelty(chunk.content),
+    });
+  }
+  if (dynamicPolicyState.recentFingerprints.length > CHUNK_NOVELTY_WINDOW) {
+    dynamicPolicyState.recentFingerprints = dynamicPolicyState.recentFingerprints.slice(-CHUNK_NOVELTY_WINDOW);
+  }
+}
+
+function isNovelChunk(chunk: ContextChunk): boolean {
+  const normalized = normalizeForNovelty(chunk.content);
+  if (!normalized) return false;
+  const sameType = dynamicPolicyState.recentFingerprints.filter((f) => f.type === chunk.type);
+  for (const seen of sameType.slice(-40)) {
+    if (jaccardSimilarity(normalized, seen.normalized) >= 0.9) return false;
+  }
+  return true;
+}
+
+function selectChunksByPolicy(
+  chunks: ContextChunk[],
+  maxChunks: number,
+  pressure: PolicyPressure,
+): { selected: ContextChunk[]; rejected: number; rejectedNovelty: number; rejectedQuota: number } {
+  const budgets = perTypeBudget(maxChunks, pressure);
+  const used: Record<ChunkType, number> = {
+    objective: 0,
+    "user-request": 0,
+    "assistant-finding": 0,
+    "file-context": 0,
+    "tool-outcome": 0,
+    "code-change": 0,
+    decision: 0,
+  };
+  const ordered = [...chunks].sort((a, b) => chunkScore(b) - chunkScore(a));
+  const selected: ContextChunk[] = [];
+  let rejectedNovelty = 0;
+  let rejectedQuota = 0;
+
+  for (const chunk of ordered) {
+    if (selected.length >= maxChunks) break;
+    if (used[chunk.type] >= (budgets[chunk.type] ?? 0)) {
+      rejectedQuota += 1;
+      continue;
+    }
+    if (!isNovelChunk(chunk)) {
+      rejectedNovelty += 1;
+      continue;
+    }
+    selected.push(chunk);
+    used[chunk.type] += 1;
+  }
+
+  return {
+    selected,
+    rejected: rejectedNovelty + rejectedQuota,
+    rejectedNovelty,
+    rejectedQuota,
+  };
+}
+
+function adaptPolicyFromRetrieval(retrieved: RetrievedChunk[]): void {
+  if (!CHUNK_DYNAMIC_POLICY) return;
+  const count = retrieved.length;
+  const unknownOrLow = retrieved.filter((r) => {
+    const t = String(r.chunkType || "unknown").toLowerCase();
+    return t === "unknown" || t === "tool-outcome" || t === "file-context";
+  }).length;
+  const noiseRate = count > 0 ? unknownOrLow / count : 1;
+
+  dynamicPolicyState.retrievalCounts.push(count);
+  dynamicPolicyState.noiseRates.push(noiseRate);
+  if (dynamicPolicyState.retrievalCounts.length > 40) dynamicPolicyState.retrievalCounts.shift();
+  if (dynamicPolicyState.noiseRates.length > 40) dynamicPolicyState.noiseRates.shift();
+
+  const zeroRate =
+    dynamicPolicyState.retrievalCounts.length > 0
+      ? dynamicPolicyState.retrievalCounts.filter((v) => v === 0).length / dynamicPolicyState.retrievalCounts.length
+      : 0;
+  const avgNoise =
+    dynamicPolicyState.noiseRates.length > 0
+      ? dynamicPolicyState.noiseRates.reduce((a, b) => a + b, 0) / dynamicPolicyState.noiseRates.length
+      : 0;
+
+  if (avgNoise >= 0.6) {
+    dynamicPolicyState.minScore = Math.min(0.008, dynamicPolicyState.minScore + 0.0005);
+    dynamicPolicyState.toolQuota = 0;
+  } else if (zeroRate >= 0.65) {
+    dynamicPolicyState.minScore = Math.max(0.0015, dynamicPolicyState.minScore - 0.0004);
+    dynamicPolicyState.toolQuota = 1;
+  } else {
+    const target = CHUNK_BASE_MIN_SCORE;
+    if (dynamicPolicyState.minScore < target) {
+      dynamicPolicyState.minScore = Math.min(target, dynamicPolicyState.minScore + 0.0002);
+    } else if (dynamicPolicyState.minScore > target) {
+      dynamicPolicyState.minScore = Math.max(target, dynamicPolicyState.minScore - 0.0002);
+    }
+    dynamicPolicyState.toolQuota = avgNoise <= 0.3 ? 1 : dynamicPolicyState.toolQuota;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Message serialization (kept from original — useful for chunk content)
@@ -535,7 +728,7 @@ function parseSearchResults(
     for (const r of results) {
       if (
         typeof r.score === "number" &&
-        r.score >= CHUNK_MIN_SCORE &&
+        r.score >= currentMinScore() &&
         typeof r.snippet === "string" &&
         r.snippet.length > 0
       ) {
@@ -575,6 +768,7 @@ async function fetchRelevantChunks(
   query: string,
   sessionId: string,
   limit: number,
+  similarity?: string,
 ): Promise<RetrievedChunk[]> {
   if (!query.trim()) return [];
 
@@ -591,7 +785,7 @@ async function fetchRelevantChunks(
         "--tags",
         `session:${sessionId}`,
         "--similarity",
-        CHUNK_SEARCH_SIMILARITY,
+        similarity || CHUNK_SEARCH_SIMILARITY,
         "--limit",
         String(limit + 2),
         query,
@@ -616,9 +810,9 @@ async function fetchRelevantChunks(
           "search",
           "--json",
           "--tags",
-          "rlm",
+          CHUNK_GLOBAL_TAG,
           "--similarity",
-          CHUNK_SEARCH_SIMILARITY,
+          similarity || CHUNK_SEARCH_SIMILARITY,
           "--limit",
           String(remaining + 2),
           query,
@@ -835,6 +1029,11 @@ class ContextChunker {
     this._totalChunksStored = 0;
     this._totalStoreFailed = 0;
     this._totalRetrieved = 0;
+    dynamicPolicyState.minScore = CHUNK_BASE_MIN_SCORE;
+    dynamicPolicyState.toolQuota = 1;
+    dynamicPolicyState.retrievalCounts = [];
+    dynamicPolicyState.noiseRates = [];
+    dynamicPolicyState.recentFingerprints = [];
   }
 }
 
@@ -878,6 +1077,7 @@ async function processTurnEnd(
   // Determine chunk budget based on token pressure
   const usage = ctx.getContextUsage();
   const tokens = usage?.tokens ?? 0;
+  const pressure: PolicyPressure = tokens >= CHUNK_HIGH_PRESSURE_TOKENS ? "high" : "normal";
   const maxChunks = tokens >= CHUNK_HIGH_PRESSURE_TOKENS
     ? CHUNK_HIGH_PRESSURE_MAX_PER_TURN
     : CHUNK_MAX_PER_TURN;
@@ -885,7 +1085,9 @@ async function processTurnEnd(
   // Step 1: Extract chunks from recent messages (last turn only)
   // We look at the last ~10 messages as a proxy for "this turn"
   const recentSlice = messages.slice(Math.max(0, messages.length - 10));
-  const chunks = extractTurnChunks(recentSlice, maxChunks);
+  const extracted = extractTurnChunks(recentSlice, maxChunks * 2);
+  const selection = selectChunksByPolicy(extracted, maxChunks, pressure);
+  const chunks = selection.selected;
 
   if (chunks.length === 0) {
     trace("turn_process_no_chunks", { turnNumber, recentMessages: recentSlice.length });
@@ -897,14 +1099,24 @@ async function processTurnEnd(
     trace("turn_process_start", {
       turnNumber,
       tokens,
+      pressure,
       maxChunks,
+      policyMinScore: currentMinScore(),
+      policyToolQuota: dynamicPolicyState.toolQuota,
+      extractedCandidates: extracted.length,
       extractedChunks: chunks.length,
+      rejectedChunks: selection.rejected,
+      rejectedNovelty: selection.rejectedNovelty,
+      rejectedQuota: selection.rejectedQuota,
       chunkTypes: chunks.map((c) => c.type),
     });
 
     // Step 2: Store chunks in YAMS
     const { stored, failed } = await storeChunks(pi, chunks, sessionId, turnNumber);
     contextChunker.recordStoreResult(stored, failed);
+    if (stored > 0) {
+      rememberChunks(chunks.slice(0, stored));
+    }
 
     trace("turn_chunks_stored", {
       turnNumber,
@@ -921,15 +1133,19 @@ async function processTurnEnd(
         query,
         sessionId,
         CHUNK_RETRIEVE_LIMIT,
+        CHUNK_SEARCH_SIMILARITY,
       );
       contextChunker.setCachedChunks(retrieved);
       contextChunker.recordRetrieval(retrieved.length);
+      adaptPolicyFromRetrieval(retrieved);
 
       trace("turn_chunks_prefetched", {
         turnNumber,
         queryChars: query.length,
         retrievedChunks: retrieved.length,
         chunkTypes: retrieved.map((c) => c.chunkType),
+        policyMinScore: currentMinScore(),
+        policyToolQuota: dynamicPolicyState.toolQuota,
       });
     }
   } catch (err: any) {
@@ -961,7 +1177,7 @@ export default function contextChunkerExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (event, _ctx) => {
     contextChunker._reset();
     currentMessages = null;
-    // Use session ID if available from event, otherwise generate one
+    // Use canonical Pi session ID so hybrid-optimizer and semantic chunker align.
     const sessionId = (event as any)?.sessionId
       || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     contextChunker.setSession(sessionId);

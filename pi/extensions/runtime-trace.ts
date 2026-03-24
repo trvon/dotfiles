@@ -90,6 +90,7 @@ function getTraceTargets(): TraceTarget[] {
   const hybridTraceFile = process.env.PI_HYBRID_TRACE_FILE || `${homedir()}/.pi/agent/hybrid-optimizer.jsonl`;
   const researchTraceFile = process.env.PI_RESEARCH_TRACE_FILE || `${homedir()}/.pi/agent/research-orchestrator.jsonl`;
   const streamSaverTraceFile = process.env.PI_STREAM_SAVER_TRACE_FILE || `${homedir()}/.pi/agent/stream-saver.jsonl`;
+  const ultraworkTraceFile = process.env.PI_ULTRAWORK_TRACE_FILE || `${homedir()}/.pi/agent/ultrawork-harness.jsonl`;
 
   return [
     { name: "runtime", path: TRACE_FILE, enabled: TRACE_ENABLED },
@@ -98,6 +99,7 @@ function getTraceTargets(): TraceTarget[] {
     { name: "hybrid", path: hybridTraceFile, enabled: true },
     { name: "research", path: researchTraceFile, enabled: true },
     { name: "stream-saver", path: streamSaverTraceFile, enabled: true },
+    { name: "ultrawork", path: ultraworkTraceFile, enabled: true },
   ];
 }
 
@@ -368,6 +370,43 @@ function analyzeStreamTrace(events: any[], nowMs: number, windowMs: number) {
   return { recoveries, sendErrors, activeStreamEnds, recentEvents, lastTs: lastEventTs(events) };
 }
 
+function analyzeUltraworkTrace(events: any[], nowMs: number, windowMs: number) {
+  const sessions = makeWindowCount();
+  const dispatches = makeWindowCount();
+  const inline = makeWindowCount();
+  const taskAdds = makeWindowCount();
+  const taskUpdates = makeWindowCount();
+  const runsStarted = makeWindowCount();
+  const runsFinished = makeWindowCount();
+
+  for (const event of events) {
+    const inRecentWindow = eventIsRecent(event, nowMs, windowMs);
+    if (event?.type === "session_start") bumpWindowCount(sessions, inRecentWindow);
+    if (event?.type === "ultrawork_dispatch") bumpWindowCount(dispatches, inRecentWindow);
+    if (event?.type === "ultrawork_inline") bumpWindowCount(inline, inRecentWindow);
+    if (event?.type === "task_add") bumpWindowCount(taskAdds, inRecentWindow);
+    if (event?.type === "task_update") bumpWindowCount(taskUpdates, inRecentWindow);
+    if (event?.type === "ultrawork_run_started") bumpWindowCount(runsStarted, inRecentWindow);
+    if (event?.type === "ultrawork_run_finished") bumpWindowCount(runsFinished, inRecentWindow);
+  }
+
+  const runActive = (() => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const t = events[i]?.type;
+      if (t === "ultrawork_run_started") return true;
+      if (t === "ultrawork_run_finished") return false;
+    }
+    return false;
+  })();
+
+  const recentEvents = events
+    .filter((event) => ["session_start", "ultrawork_dispatch", "ultrawork_inline", "task_add", "task_update", "ultrawork_run_started", "ultrawork_run_finished"].includes(event?.type))
+    .slice(-6)
+    .map((event) => `${formatClock(event?.ts)} ${event?.type}`);
+
+  return { sessions, dispatches, inline, taskAdds, taskUpdates, runsStarted, runsFinished, runActive, recentEvents, lastTs: lastEventTs(events) };
+}
+
 function analyzeToolingPatterns(events: any[], nowMs: number, windowMs: number) {
   const maskedPipelines = makeWindowCount();
   const samples: string[] = [];
@@ -518,12 +557,14 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
     const researchEvents = readRecentTraceEvents(targetMap.get("research") || "", 600);
     const compactionEvents = readRecentTraceEvents(targetMap.get("compaction") || "", 600);
     const streamEvents = readRecentTraceEvents(targetMap.get("stream-saver") || "", 600);
+    const ultraworkEvents = readRecentTraceEvents(targetMap.get("ultrawork") || "", 600);
 
     const watchdog = analyzeWatchdogTrace(watchdogEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
     const hybrid = analyzeHybridTrace(hybridEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
     const research = analyzeResearchTrace(researchEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
     const compaction = analyzeCompactionTrace(compactionEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
     const stream = analyzeStreamTrace(streamEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
+    const ultrawork = analyzeUltraworkTrace(ultraworkEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
     const tooling = analyzeToolingPatterns(runtimeEvents, nowMs, DOCTOR_SIGNAL_WINDOW_MS);
 
     const backendLines = allInfo.map(
@@ -573,6 +614,7 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
       `research recent injected=${research.autoInjected.recent} gatherFailures=${research.gatherFailures.recent} autoErrors=${research.autoErrors.recent}`,
       `compaction recent failures=${compaction.failures.recent} fallbacks=${compaction.fallbacks.recent} retries=${compaction.retries.recent}`,
       `stream recent recoveries=${stream.recoveries.recent} sendErrors=${stream.sendErrors.recent} activeEnds=${stream.activeStreamEnds.recent}`,
+      `ultrawork state=${ultrawork.runActive ? "running" : "idle"} recent dispatches=${ultrawork.dispatches.recent} runs=${ultrawork.runsStarted.recent}/${ultrawork.runsFinished.recent} taskAdds=${ultrawork.taskAdds.recent} taskUpdates=${ultrawork.taskUpdates.recent}`,
       `tooling recent maskedPipelines=${tooling.maskedPipelines.recent}`,
       warnings.length > 0 ? `warnings ${warnings.join(" | ")}` : "warnings none",
       status.message,
@@ -643,6 +685,17 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
       `activeEnds recent=${stream.activeStreamEnds.recent} total=${stream.activeStreamEnds.total}`,
       ...(stream.recentEvents.length > 0 ? ["recent:", ...stream.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
       "",
+      "[ultrawork]",
+      `state=${ultrawork.runActive ? "running" : "idle"}`,
+      `sessions recent=${ultrawork.sessions.recent} total=${ultrawork.sessions.total}`,
+      `dispatches recent=${ultrawork.dispatches.recent} total=${ultrawork.dispatches.total}`,
+      `inline recent=${ultrawork.inline.recent} total=${ultrawork.inline.total}`,
+      `runs started recent=${ultrawork.runsStarted.recent} total=${ultrawork.runsStarted.total}`,
+      `runs finished recent=${ultrawork.runsFinished.recent} total=${ultrawork.runsFinished.total}`,
+      `taskAdds recent=${ultrawork.taskAdds.recent} total=${ultrawork.taskAdds.total}`,
+      `taskUpdates recent=${ultrawork.taskUpdates.recent} total=${ultrawork.taskUpdates.total}`,
+      ...(ultrawork.recentEvents.length > 0 ? ["recent:", ...ultrawork.recentEvents.map((line) => `- ${line}`)] : ["recent: none"]),
+      "",
       ...modelSection,
       "",
       ...tracesSection,
@@ -674,6 +727,7 @@ export default function runtimeTraceExtension(pi: ExtensionAPI): void {
       research,
       compaction,
       stream,
+      ultrawork,
       tooling,
       warnings,
       traces: status.sizes,

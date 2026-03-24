@@ -198,6 +198,7 @@ export PI_HYBRID_YAMS_TIMEOUT_MS=10000
 
 - Hybrid: `/hybrid`, `/hybrid-last`, `/hybrid-audit`, `/hybrid-proof-forward`, `/hybrid-hints`, `/hybrid-reset`, `/hybrid-proof`, `/hybrid-proof-research`, `/oracle-proof`
 - RLM: `/rlm`, `/rlm-deep-recall <topic>`
+- Ultrawork harness: tool interface `ultrawork` (JSON actions: help, status, submit, dispatch, list_tasks, add_task, set_task, mode, reset) plus command wrappers `/ultrawork [objective]`, `/ultrawork-help`, `/task [list|add|start|done|cancel|reset]`
 - Watchdog: `/watchdog-proof`, `/watchdog-proof-gate`, `/watchdog-proof-termination`, `/watchdog-proof-termination-complete`, `/watchdog-proof-termination-ambiguous`, `/watchdog-proof-termination-post-complete`, `/watchdog-proof-termination-duplicate`, `/watchdog-proof-termination-user-override`, `/watchdog-proof-write-schema-loop`, `/watchdog-proof-final-tail`
 - Research: `/research-status`, `/research-framework-status`, `/research-gather <topic>`, `/research-critic`, `/research-pack`, `/research-review <topic>`
 - Runtime trace: `/trace [status|clear|mark <label>]`, `/doctor` (legacy: `/trace-status`, `/trace-clear`, `/trace-mark <label>`)

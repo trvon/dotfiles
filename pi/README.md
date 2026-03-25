@@ -56,12 +56,12 @@ cp ~/.pi/agent/health-watchdog-cron.example.json ~/.pi/agent/health-watchdog-cro
 | Role | Model | Rationale |
 |------|-------|-----------|
 | Main chat | `unsloth/qwen3.5-35b-a3b` | Primary, high-accuracy |
-| Optimizer | `qwen3.5-9b` | Sidecar, speed-optimized |
-| Research optimizer | `qwen3.5-9b` | Sidecar, speed-optimized |
+| Optimizer | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
+| Research optimizer | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
 | Oracle | `unsloth/qwen3.5-35b-a3b` | Validation needs accuracy |
-| Watchdog verifier | `qwen3.5-9b` | Sidecar, speed-optimized |
-| RLM extractor | `qwen3.5-9b` | Sidecar, falls back to heuristic |
-| Compaction summarizer | `qwen3.5-9b` | Sidecar, falls back to heuristic |
+| Watchdog verifier | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
+| RLM extractor | `openai/gpt-oss-20b` | Sidecar, falls back to heuristic |
+| Compaction summarizer | `openai/gpt-oss-20b` | Sidecar, falls back to heuristic |
 | DCS enrichment | `unsloth/qwen3.5-35b-a3b` | Via global `research-agent` CLI |
 
 Set `PI_RLM_EXTRACTOR_MODE=heuristic` to disable model-based extraction and use the regex/pattern heuristic instead.
@@ -76,8 +76,8 @@ export PI_PRIMARY_MODEL=unsloth/qwen3.5-35b-a3b
 
 # Optimizer + research optimizer: routed to lighter 9b model for speed
 export PI_OPTIMIZER_PROVIDER=lmstudio
-export PI_OPTIMIZER_MODEL=qwen3.5-9b
-export PI_OPTIMIZER_RESEARCH_MODEL=qwen3.5-9b
+export PI_OPTIMIZER_MODEL=openai/gpt-oss-20b
+export PI_OPTIMIZER_RESEARCH_MODEL=openai/gpt-oss-20b
 
 # Oracle: stays on primary 35b model for accuracy
 export PI_ORACLE_MODEL="$PI_PRIMARY_MODEL"
@@ -100,7 +100,7 @@ export PI_OPTIMIZER_INACTIVITY_MS=20000        # Inactivity timeout for 9b optim
 export PI_HEALTH_WATCHDOG_MODEL_STALL_MS=1200000
 export PI_HEALTH_WATCHDOG_MODEL_SILENT_MS=20000
 # Watchdog verifier: routed to lighter 9b model for speed
-export PI_HEALTH_WATCHDOG_VERIFIER_MODEL=qwen3.5-9b
+export PI_HEALTH_WATCHDOG_VERIFIER_MODEL=openai/gpt-oss-20b
 export PI_HEALTH_WATCHDOG_VERIFIER_INACTIVITY_MS=20000  # Inactivity timeout for 9b verifier
 export PI_HEALTH_WATCHDOG_RECOVER_ON_TERMINATION=1
 export PI_HEALTH_WATCHDOG_TERMINATION_MODE=balanced
@@ -116,7 +116,7 @@ export PI_HEALTH_WATCHDOG_FINAL_TAIL_GRACE_MS=15000
 # RLM extractor: model-based extraction using 9b (falls back to heuristic on failure)
 export PI_RLM_EXTRACTOR_MODE=model
 export PI_RLM_EXTRACTOR_PROVIDER=lmstudio
-export PI_RLM_EXTRACTOR_MODEL=qwen3.5-9b
+export PI_RLM_EXTRACTOR_MODEL=openai/gpt-oss-20b
 export PI_RLM_EXTRACTOR_MAX_TOKENS=1200
 export PI_RLM_EXTRACTOR_INACTIVITY_MS=20000    # Inactivity timeout for 9b RLM extractor
 export PI_RLM_EXTRACTOR_MAX_INPUT_CHARS=12000
@@ -133,7 +133,7 @@ export PI_CONTEXT_BUDGET_STEER_TOKENS=80000 # Token count for YAMS-first steerin
 
 # Compaction summarizer: routes summarization to 9b instead of main 35b model
 # Falls back to heuristic summary if 9b fails/times out
-export PI_COMPACTION_MODEL=qwen3.5-9b
+export PI_COMPACTION_MODEL=openai/gpt-oss-20b
 export PI_COMPACTION_PROVIDER=lmstudio
 export PI_COMPACTION_INACTIVITY_MS=30000       # Inactivity timeout for 9b summarization call (default raised from 20s to 30s for GPU contention at turn boundaries)
 export PI_COMPACTION_MAX_INPUT_CHARS=24000     # Max chars of serialized conversation to send to 9b
@@ -198,7 +198,8 @@ export PI_HYBRID_YAMS_TIMEOUT_MS=10000
 
 - Hybrid: `/hybrid`, `/hybrid-last`, `/hybrid-audit`, `/hybrid-proof-forward`, `/hybrid-hints`, `/hybrid-reset`, `/hybrid-proof`, `/hybrid-proof-research`, `/oracle-proof`
 - RLM: `/rlm`, `/rlm-deep-recall <topic>`
-- Ultrawork harness: tool interface `ultrawork` (JSON actions: help, status, submit, dispatch, list_tasks, add_task, set_task, mode, reset) plus command wrappers `/ultrawork [objective]`, `/ultrawork-help`, `/task [list|add|start|done|cancel|reset]`
+- Ultrawork harness: tool interface `ultrawork` (JSON actions: help, status, submit, dispatch, ingest_tasks, list_tasks, add_task, set_task, mode, reset) plus command wrappers `/ultrawork [objective]`, `/ultrawork-help`, `/task [list|add|start|done|cancel|reset]`
+- Ultrawork state is session-backed (`ultrawork-state` custom entries). Do not use file writes as trigger flow.
 - Watchdog: `/watchdog-proof`, `/watchdog-proof-gate`, `/watchdog-proof-termination`, `/watchdog-proof-termination-complete`, `/watchdog-proof-termination-ambiguous`, `/watchdog-proof-termination-post-complete`, `/watchdog-proof-termination-duplicate`, `/watchdog-proof-termination-user-override`, `/watchdog-proof-write-schema-loop`, `/watchdog-proof-final-tail`
 - Research: `/research-status`, `/research-framework-status`, `/research-gather <topic>`, `/research-critic`, `/research-pack`, `/research-review <topic>`
 - Runtime trace: `/trace [status|clear|mark <label>]`, `/doctor` (legacy: `/trace-status`, `/trace-clear`, `/trace-mark <label>`)

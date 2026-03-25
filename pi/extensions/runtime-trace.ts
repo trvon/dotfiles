@@ -370,7 +370,7 @@ function analyzeStreamTrace(events: any[], nowMs: number, windowMs: number) {
   return { recoveries, sendErrors, activeStreamEnds, recentEvents, lastTs: lastEventTs(events) };
 }
 
-function analyzeUltraworkTrace(events: any[], nowMs: number, windowMs: number) {
+export function analyzeUltraworkTrace(events: any[], nowMs: number, windowMs: number) {
   const sessions = makeWindowCount();
   const dispatches = makeWindowCount();
   const inline = makeWindowCount();

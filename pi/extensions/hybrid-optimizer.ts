@@ -3091,6 +3091,15 @@ export default function hybridOptimizerExtension(pi: ExtensionAPI): void {
     // gets aborted again, skips compaction again, etc.
     const turnMessage = (_event as any).message;
     const stopReason = turnMessage?.stopReason;
+
+    // Do not compact on tool-use turns. Compacting mid tool-call loops creates
+    // long apparent "hangs" where the next model turn is delayed behind
+    // compaction + summarization work.
+    if (typeof stopReason === "string" && stopReason.trim().toLowerCase() === "tooluse") {
+      trace("compaction_skipped", { reason: "tool_use_turn" });
+      return;
+    }
+
     const CRITICAL_CONTEXT_RATIO = 0.80;
     if (typeof stopReason === "string") {
       const lower = stopReason.trim().toLowerCase();

@@ -5,38 +5,24 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
-  addTask,
   buildObjectiveFromTasks,
   buildUltraworkPrompt,
-  formatTaskList,
-  getDispatchableTasks,
-  makeEmptyStore,
   normalizePrompt,
   parseTaskCommand,
-  sanitizeStore,
-  setTaskStatus,
-  type TaskStatus,
-  type TaskStore,
 } from "./ultrawork-core.ts";
-
-type UltraworkState = {
-  modeEnabled: boolean;
-  store: TaskStore;
-  runActive: boolean;
-  runStartedAt: number | null;
-  updatedAt: number;
-};
+import {
+  ULTRAWORK_API_GUIDANCE,
+  applyUltraworkAction,
+  createInitialUltraworkState,
+  sanitizeUltraworkState,
+  summarizeProgress,
+  type UltraworkAction,
+  type UltraworkState,
+} from "./ultrawork-actions.ts";
 
 const TRACE_FILE = process.env.PI_ULTRAWORK_TRACE_FILE || `${homedir()}/.pi/agent/ultrawork-harness.jsonl`;
 const ULTRAWORK_ALWAYS_ON = parseBoolean(process.env.PI_ULTRAWORK_ALWAYS_ON, true);
 const STATE_CUSTOM_TYPE = "ultrawork-state";
-const ULTRAWORK_API_GUIDANCE = [
-  "Ultrawork API contract:",
-  "- Use tool 'ultrawork' as the primary delegation interface.",
-  "- First call when uncertain: {\"action\":\"help\"}.",
-  "- Bulk ingest: {\"action\":\"ingest_tasks\",\"tasks\":[...]}.",
-  "- Dispatch: {\"action\":\"dispatch\"} or {\"action\":\"submit\",\"objective\":\"...\"}.",
-].join("\n");
 
 const UltraworkParams = Type.Object({
   action: StringEnum([
@@ -90,15 +76,6 @@ function notify(ctx: ExtensionContext, message: string, type: "info" | "warning"
   ctx.ui.notify(message, type);
 }
 
-function renderStatusChip(ctx: ExtensionContext, modeEnabled: boolean): void {
-  if (!ctx.hasUI) return;
-  const t = ctx.ui.theme;
-  const chip = modeEnabled
-    ? `${t.fg("dim", "ultrawork:")}${t.fg("accent", "on")}`
-    : `${t.fg("dim", "ultrawork:")}${t.fg("warning", "off")}`;
-  ctx.ui.setStatus("ultrawork", chip);
-}
-
 function renderProgressBar(done: number, total: number, width = 8): string {
   if (total <= 0) return "[--------]";
   const ratio = Math.max(0, Math.min(1, done / total));
@@ -106,17 +83,11 @@ function renderProgressBar(done: number, total: number, width = 8): string {
   return `[${"#".repeat(filled)}${"-".repeat(Math.max(0, width - filled))}]`;
 }
 
-function summarizeProgress(store: TaskStore): { done: number; total: number; bar: string } {
-  const active = store.items.filter((i) => i.status !== "cancelled");
-  const done = active.filter((i) => i.status === "done").length;
-  const total = active.length;
-  return { done, total, bar: renderProgressBar(done, total) };
-}
-
 function renderRuntimeStatus(ctx: ExtensionContext, state: UltraworkState): void {
   if (!ctx.hasUI) return;
   const t = ctx.ui.theme;
-  const progress = summarizeProgress(state.store);
+  const progressBase = summarizeProgress(state.store);
+  const progress = { ...progressBase, bar: renderProgressBar(progressBase.done, progressBase.total) };
   const mode = state.modeEnabled ? t.fg("accent", "on") : t.fg("warning", "off");
   const run = state.runActive ? t.fg("success", "running") : t.fg("dim", "idle");
   ctx.ui.setStatus("ultrawork", `${t.fg("dim", "ultrawork:")}${mode} ${run} ${progress.done}/${progress.total} ${progress.bar}`);
@@ -139,15 +110,9 @@ function reconstructState(ctx: ExtensionContext): UltraworkState {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i] as any;
     if (entry?.type !== "custom" || entry?.customType !== STATE_CUSTOM_TYPE) continue;
-    const data = entry?.data as Partial<UltraworkState> | undefined;
-    const store = sanitizeStore(data?.store);
-    const modeEnabled = typeof data?.modeEnabled === "boolean" ? data.modeEnabled : ULTRAWORK_ALWAYS_ON;
-    const runActive = false;
-    const runStartedAt = null;
-    const updatedAt = typeof data?.updatedAt === "number" ? data.updatedAt : Date.now();
-    return { modeEnabled, store, runActive, runStartedAt, updatedAt };
+    return sanitizeUltraworkState(entry?.data, ULTRAWORK_ALWAYS_ON);
   }
-  return { modeEnabled: ULTRAWORK_ALWAYS_ON, store: makeEmptyStore(), runActive: false, runStartedAt: null, updatedAt: Date.now() };
+  return createInitialUltraworkState(ULTRAWORK_ALWAYS_ON);
 }
 
 function persistState(pi: ExtensionAPI, state: UltraworkState): void {
@@ -167,13 +132,57 @@ function parseToolPayload(payload: string | undefined): Record<string, unknown> 
 }
 
 export default function ultraworkHarnessExtension(pi: ExtensionAPI): void {
-  let state: UltraworkState = {
-    modeEnabled: ULTRAWORK_ALWAYS_ON,
-    store: makeEmptyStore(),
-    runActive: false,
-    runStartedAt: null,
-    updatedAt: Date.now(),
-  };
+  let state: UltraworkState = createInitialUltraworkState(ULTRAWORK_ALWAYS_ON);
+
+  async function dispatchObjective(ctx: ExtensionContext, objective: string): Promise<void> {
+    const message = buildUltraworkPrompt(objective);
+    try {
+      if (ctx.isIdle()) pi.sendUserMessage(message);
+      else pi.sendUserMessage(message, { deliverAs: "followUp" });
+    } catch (error: any) {
+      const text = String(error?.message || error || "").toLowerCase();
+      if (text.includes("already processing a prompt") || text.includes("agent is busy")) {
+        pi.sendUserMessage(message, { deliverAs: "followUp" });
+        trace("ultrawork_dispatch_queued_busy", { objectiveChars: objective.length });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function executeAction(action: UltraworkAction, ctx: ExtensionContext): Promise<{ text: string; ok: boolean }> {
+    const result = applyUltraworkAction(state, action);
+    state = result.state;
+    persistState(pi, state);
+    renderRuntimeStatus(ctx, state);
+
+    for (const change of result.changes) {
+      if (change === "task_add") {
+        const last = state.store.items[state.store.items.length - 1];
+        if (last) trace("task_add", { id: last.id, title: last.title });
+      } else if (change === "task_update") {
+        trace("task_update", { taskCount: state.store.items.length });
+      } else if (change === "task_ingest") {
+        trace("task_ingest", { taskCount: state.store.items.length });
+      } else if (change === "mode_on" || change === "mode_off") {
+        trace("mode", { mode: state.modeEnabled });
+      } else if (change === "reset") {
+        trace("task_reset");
+      }
+    }
+
+    if (result.dispatchObjective) {
+      await dispatchObjective(ctx, result.dispatchObjective);
+      trace("ultrawork_dispatch", {
+        objectiveChars: result.dispatchObjective.length,
+        queued: state.store.items.length,
+        idle: ctx.isIdle(),
+      });
+      trace("ultrawork_run_started", { source: "action", objectiveChars: result.dispatchObjective.length });
+    }
+
+    return { text: result.text, ok: result.ok };
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     state = reconstructState(ctx);
@@ -206,181 +215,30 @@ export default function ultraworkHarnessExtension(pi: ExtensionAPI): void {
       const get = <T>(key: string, fallback: T): T => (key in payload ? (payload[key] as T) : fallback);
 
       const action = params.action;
-      if (action === "help") {
-        const text = [
-          ULTRAWORK_API_GUIDANCE,
-          "",
-          "ultrawork JSON API",
-          "- action=help|status|submit|dispatch|ingest_tasks|list_tasks|add_task|set_task|mode|reset",
-          "- submit/dispatch: objective optional; if omitted, queued tasks are dispatched",
-          "- ingest_tasks: pass tasks[] in params or payload JSON",
-          "- add_task: taskTitle required",
-          "- set_task: taskId + taskStatus required (todo|in_progress|done|cancelled)",
-          "- mode: on|off|status",
-          "Examples:",
-          '{"action":"add_task","taskTitle":"Fix compile warnings"}',
-          '{"action":"ingest_tasks","tasks":[{"title":"Task A"},{"title":"Task B","status":"pending"}]}',
-          '{"action":"set_task","taskId":1,"taskStatus":"in_progress"}',
-          '{"action":"dispatch"}',
-        ].join("\n");
-        return { content: [{ type: "text", text }], details: toStateDetails(state) };
-      }
+      const mappedAction: UltraworkAction = (
+        action === "help" ? { action } :
+        action === "status" ? { action } :
+        action === "mode" ? { action, mode: (params.mode || String(get("mode", "status")).toLowerCase() as any) } :
+        action === "reset" ? { action } :
+        action === "list_tasks" ? { action } :
+        action === "add_task" ? { action, taskTitle: params.taskTitle || String(get("taskTitle", "")).trim() } :
+        action === "ingest_tasks" ? {
+          action,
+          tasks: Array.isArray(params.tasks) ? (params.tasks as any) : (Array.isArray(get("tasks", [])) ? (get("tasks", []) as any) : []),
+          dedupe: (params.dedupe ?? Boolean(get("dedupe", true))) !== false,
+        } :
+        action === "set_task" ? {
+          action,
+          taskId: Number(params.taskId ?? get("taskId", NaN)),
+          taskStatus: String(params.taskStatus || get("taskStatus", "")).trim().toLowerCase() as any,
+        } :
+        action === "submit" ? { action, objective: params.objective || String(get("objective", "")).trim() } :
+        { action: "dispatch", objective: params.objective || String(get("objective", "")).trim() }
+      );
 
-      if (action === "status") {
-        return {
-          content: [{ type: "text", text: `ultrawork mode=${state.modeEnabled ? "on" : "off"} tasks=${state.store.items.length}` }],
-          details: toStateDetails(state),
-        };
-      }
-
-      if (action === "mode") {
-        const mode = (params.mode || String(get("mode", "status"))).toLowerCase();
-        if (mode === "on") state.modeEnabled = true;
-        else if (mode === "off") state.modeEnabled = false;
-        renderRuntimeStatus(ctx, state);
-        persistState(pi, state);
-        trace("mode", { mode: state.modeEnabled });
-        return {
-          content: [{ type: "text", text: `ultrawork mode=${state.modeEnabled ? "on" : "off"}` }],
-          details: toStateDetails(state),
-        };
-      }
-
-      if (action === "reset") {
-        state.store = makeEmptyStore();
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        trace("task_reset");
-        return { content: [{ type: "text", text: "ultrawork tasks reset" }], details: toStateDetails(state) };
-      }
-
-      if (action === "list_tasks") {
-        return {
-          content: [{ type: "text", text: formatTaskList(state.store) }],
-          details: toStateDetails(state),
-        };
-      }
-
-      if (action === "add_task") {
-        const title = normalizePrompt(params.taskTitle || String(get("taskTitle", "")).trim());
-        if (!title) {
-          return { content: [{ type: "text", text: "Error: taskTitle required" }], details: toStateDetails(state) };
-        }
-        const item = addTask(state.store, title);
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        trace("task_add", { id: item.id, title: item.title });
-        return {
-          content: [{ type: "text", text: `task added #${item.id} ${item.title}` }],
-          details: toStateDetails(state),
-        };
-      }
-
-      if (action === "ingest_tasks") {
-        const rawTasks = Array.isArray(params.tasks)
-          ? params.tasks
-          : (Array.isArray(get("tasks", [])) ? (get("tasks", []) as Array<any>) : []);
-        const dedupe = (params.dedupe ?? Boolean(get("dedupe", true))) !== false;
-        if (!rawTasks.length) {
-          return { content: [{ type: "text", text: "Error: ingest_tasks requires non-empty tasks array" }], details: toStateDetails(state) };
-        }
-
-        const existing = new Set(state.store.items.map((t) => normalizePrompt(t.title).toLowerCase()));
-        let added = 0;
-        let skipped = 0;
-        for (const row of rawTasks) {
-          const title = normalizePrompt(String(row?.title || "")).trim();
-          if (!title) {
-            skipped += 1;
-            continue;
-          }
-          const key = title.toLowerCase();
-          if (dedupe && existing.has(key)) {
-            skipped += 1;
-            continue;
-          }
-          const item = addTask(state.store, title);
-          const rawStatus = String(row?.status || "todo").trim().toLowerCase();
-          const status = rawStatus === "pending" ? "todo" : rawStatus;
-          if (status === "in_progress" || status === "done" || status === "cancelled") {
-            item.status = status;
-            item.updatedAt = Date.now();
-          }
-          existing.add(key);
-          added += 1;
-        }
-
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        trace("task_ingest", { added, skipped, dedupe, total: rawTasks.length });
-        return {
-          content: [{ type: "text", text: `ingested tasks: added=${added} skipped=${skipped} total=${rawTasks.length}` }],
-          details: toStateDetails(state),
-        };
-      }
-
-      if (action === "set_task") {
-        const taskId = Number(params.taskId ?? get("taskId", NaN));
-        const taskStatus = String(params.taskStatus || get("taskStatus", "")).trim().toLowerCase() as TaskStatus;
-        if (!Number.isFinite(taskId) || !["todo", "in_progress", "done", "cancelled"].includes(taskStatus)) {
-          return { content: [{ type: "text", text: "Error: set_task requires taskId + taskStatus" }], details: toStateDetails(state) };
-        }
-        const targetStatus = taskStatus === "todo" ? "in_progress" : taskStatus;
-        const updated = setTaskStatus(state.store, taskId, targetStatus as "in_progress" | "done" | "cancelled");
-        if (!updated) return { content: [{ type: "text", text: `Error: task #${taskId} not found` }], details: toStateDetails(state) };
-        if (taskStatus === "todo") {
-          updated.status = "todo";
-          updated.updatedAt = Date.now();
-        }
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        trace("task_update", { id: updated.id, status: updated.status });
-        return { content: [{ type: "text", text: `task #${updated.id} -> ${updated.status}` }], details: toStateDetails(state) };
-      }
-
-      if (action === "submit" || action === "dispatch") {
-        const explicitObjective = normalizePrompt(params.objective || String(get("objective", "")).trim());
-        const objective = explicitObjective || buildObjectiveFromTasks(state.store) || "";
-        if (!objective) {
-          return { content: [{ type: "text", text: "Error: no objective and no queued tasks" }], details: toStateDetails(state) };
-        }
-
-        if (!explicitObjective) {
-          const queued = getDispatchableTasks(state.store);
-          for (const item of queued) {
-            if (item.status === "todo") {
-              item.status = "in_progress";
-              item.updatedAt = Date.now();
-            }
-          }
-        }
-
-        state.modeEnabled = true;
-        state.runActive = true;
-        state.runStartedAt = Date.now();
-        renderRuntimeStatus(ctx, state);
-        persistState(pi, state);
-
-        const message = buildUltraworkPrompt(objective);
-        if (ctx.isIdle()) pi.sendUserMessage(message);
-        else pi.sendUserMessage(message, { deliverAs: "followUp" });
-
-        trace("ultrawork_dispatch", {
-          explicitObjective: Boolean(explicitObjective),
-          objectiveChars: objective.length,
-          queued: getDispatchableTasks(state.store).length,
-          idle: ctx.isIdle(),
-        });
-        trace("ultrawork_run_started", { source: "tool", objectiveChars: objective.length });
-
-        return {
-          content: [{ type: "text", text: `ultrawork dispatched (${explicitObjective ? "explicit objective" : "queued tasks"})` }],
-          details: toStateDetails(state),
-        };
-      }
-
+      const out = await executeAction(mappedAction, ctx);
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}` }],
+        content: [{ type: "text", text: out.text }],
         details: toStateDetails(state),
       };
     },
@@ -396,31 +254,22 @@ export default function ultraworkHarnessExtension(pi: ExtensionAPI): void {
         return;
       }
       if (parsed.action === "list") {
-        notify(ctx, formatTaskList(state.store));
+        const out = await executeAction({ action: "list_tasks" }, ctx);
+        notify(ctx, out.text);
         return;
       }
       if (parsed.action === "reset") {
-        state.store = makeEmptyStore();
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        notify(ctx, "Tasks cleared.");
+        const out = await executeAction({ action: "reset" }, ctx);
+        notify(ctx, out.text);
         return;
       }
       if (parsed.action === "add") {
-        const item = addTask(state.store, parsed.title);
-        persistState(pi, state);
-        renderRuntimeStatus(ctx, state);
-        notify(ctx, `Task added: #${item.id} ${item.title}`);
+        const out = await executeAction({ action: "add_task", taskTitle: parsed.title }, ctx);
+        notify(ctx, out.text, out.ok ? "info" : "warning");
         return;
       }
-      const updated = setTaskStatus(state.store, parsed.id, parsed.status);
-      if (!updated) {
-        notify(ctx, `Task #${parsed.id} not found.`, "warning");
-        return;
-      }
-      persistState(pi, state);
-      renderRuntimeStatus(ctx, state);
-      notify(ctx, `Task #${updated.id} -> ${updated.status}`);
+      const out = await executeAction({ action: "set_task", taskId: parsed.id, taskStatus: parsed.status as any }, ctx);
+      notify(ctx, out.text, out.ok ? "info" : "warning");
     },
   });
 
@@ -428,21 +277,11 @@ export default function ultraworkHarnessExtension(pi: ExtensionAPI): void {
     description: "Dispatch ultrawork objective (or queued tasks if omitted)",
     handler: async (args, ctx) => {
       const objective = normalizePrompt((args || "").trim());
-      const effective = objective || buildObjectiveFromTasks(state.store) || "";
-      if (!effective) {
+      const out = await executeAction({ action: objective ? "submit" : "dispatch", objective }, ctx);
+      if (!out.ok) {
         notify(ctx, "No queued tasks found. Add tasks with /task add <title> or run /ultrawork <objective>.", "warning");
         return;
       }
-      state.modeEnabled = true;
-      state.runActive = true;
-      state.runStartedAt = Date.now();
-      renderRuntimeStatus(ctx, state);
-      persistState(pi, state);
-      const msg = buildUltraworkPrompt(effective);
-      if (ctx.isIdle()) pi.sendUserMessage(msg);
-      else pi.sendUserMessage(msg, { deliverAs: "followUp" });
-      trace("ultrawork_dispatch", { command: true, objectiveChars: effective.length, explicit: Boolean(objective) });
-      trace("ultrawork_run_started", { source: "command", objectiveChars: effective.length });
       notify(ctx, objective ? "Ultrawork dispatched from objective." : "Ultrawork dispatched from queued tasks.");
     },
   });

@@ -175,15 +175,15 @@ function readDefaultProvider(): string {
 
 /**
  * Default sidecar model IDs when `sidecar` section is absent or missing a
- * provider. Uses the canonical LM Studio Qwen 9B ID.
+ * provider. Uses GPT-OSS 20B as the global fallback sidecar model.
  */
 const DEFAULT_SIDECAR: SidecarConfig = {
-  optimizer: "qwen_qwen3.5-9b",
-  optimizerFallback: "qwen_qwen3.5-9b",
-  researchOptimizer: "qwen_qwen3.5-9b",
+  optimizer: "openai/gpt-oss-20b",
+  optimizerFallback: "openai/gpt-oss-20b",
+  researchOptimizer: "openai/gpt-oss-20b",
   oracle: "",                    // empty → falls back to primary model
-  rlmExtractor: "qwen_qwen3.5-9b",
-  compaction: "qwen_qwen3.5-9b",
+  rlmExtractor: "openai/gpt-oss-20b",
+  compaction: "openai/gpt-oss-20b",
   verifier: "",                  // empty → falls back to primary model
   critic: "",                    // empty → falls back to primary model
 };
@@ -231,7 +231,7 @@ function readSidecarMap(): Record<string, SidecarConfig> {
 /**
  * Get sidecar model configuration for the given provider.
  *
- * Falls back to DEFAULT_SIDECAR (canonical qwen_qwen3.5-9b defaults) if the
+ * Falls back to DEFAULT_SIDECAR (gpt-oss-20b defaults) if the
  * provider has no entry in models.json `sidecar` section.
  */
 export function getSidecarConfig(provider: string): SidecarConfig {

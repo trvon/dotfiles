@@ -1,0 +1,63 @@
+model:
+  provider: custom
+  default: gemma4
+  base_url: http://host.docker.internal:8080/v1
+  context_length: 32768
+
+terminal:
+  backend: local
+  cwd: /workspace/dotfiles
+  timeout: 180
+  lifetime_seconds: 300
+
+compression:
+  enabled: true
+  threshold: 0.5
+  summary_provider: main
+  summary_model: gemma4
+
+auxiliary:
+  web_extract:
+    provider: main
+    model: gemma4
+    timeout: 60
+  approval:
+    provider: main
+    model: gemma4
+    timeout: 60
+  session_search:
+    provider: main
+    model: gemma4
+    timeout: 60
+  skills_hub:
+    provider: main
+    model: gemma4
+    timeout: 60
+  mcp:
+    provider: main
+    model: gemma4
+    timeout: 60
+  flush_memories:
+    provider: main
+    model: gemma4
+    timeout: 60
+
+mcp_servers:
+  searxng:
+    command: mcp-searxng
+    env:
+      SEARXNG_URL: http://searxng:8080
+    tools:
+      include: [searxng_web_search]
+      resources: false
+      prompts: false
+  yams:
+    command: yams
+    args: ["serve", "--daemon-socket", "/tmp/yams-daemon.sock"]
+    tools:
+      include: [query]
+      resources: false
+      prompts: false
+
+display:
+  streaming: true

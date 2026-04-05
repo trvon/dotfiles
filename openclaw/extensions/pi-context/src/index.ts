@@ -13,8 +13,11 @@ const DEFAULTS = {
   yamsBinary: "yams",
   yamsCwd: "/workspace/dotfiles",
   rlmCollection: "pi-session-memory",
+  rlmGlobalTag: "rlm-openclaw",
   rlmSimilarity: 0.001,
   rlmLimit: 3,
+  rlmBaseMinScore: 0.003,
+  rlmDynamicPolicy: true,
   autoStore: true,
   storeLimit: 3,
   continuityWatchdogEnabled: true,
@@ -24,12 +27,11 @@ const DEFAULTS = {
   activityHeartbeatMs: 1800000,
   activityHeartbeatPollMs: 300000,
   lmstudioBaseUrl: "http://host.docker.internal:1234/v1",
-  sidecarModel: "qwen_qwen3.5-4b",
+  sidecarModel: "qwen_qwen3.5-9b",
   dcsCli: "research-agent",
   dcsContextProfile: "small",
 } as const;
 
-const RLM_MIN_SCORE = 0.003;
 const RLM_RETRIEVE_TIMEOUT_MS = 8000;
 const SIDECAR_QUERY_TIMEOUT_MS = 12000;
 const RLM_STORE_TIMEOUT_MS = 10000;
@@ -55,8 +57,11 @@ type PluginConfig = {
   yamsBinary: string;
   yamsCwd: string;
   rlmCollection: string;
+  rlmGlobalTag: string;
   rlmSimilarity: number;
   rlmLimit: number;
+  rlmBaseMinScore: number;
+  rlmDynamicPolicy: boolean;
   autoStore: boolean;
   storeLimit: number;
   continuityWatchdogEnabled: boolean;
@@ -95,6 +100,7 @@ type SessionState = {
     assistantText: string;
     fingerprint: string;
   };
+  storeInFlight: boolean;
 };
 
 type MemoryChunk = {
@@ -116,6 +122,66 @@ class TempFileManager {
 
 const rlmTempFileManager = new TempFileManager();
 
+const rlmPolicyState = {
+  minScore: DEFAULTS.rlmBaseMinScore,
+  retrievalCounts: [] as number[],
+  noiseRates: [] as number[],
+};
+
+function currentRlmMinScore(cfg: PluginConfig): number {
+  return cfg.rlmDynamicPolicy ? rlmPolicyState.minScore : cfg.rlmBaseMinScore;
+}
+
+function scoreHint(h: RlmHint): number {
+  const t = h.chunkType.toLowerCase();
+  const w = t === "decision" || t === "objective"
+    ? 0.12
+    : t === "assistant-finding" || t === "code-change"
+      ? 0.08
+      : t === "tool-outcome" || t === "file-context" || t === "unknown"
+        ? -0.05
+        : 0;
+  return h.score + w;
+}
+
+function rankHints(hints: RlmHint[]): RlmHint[] {
+  return [...hints].sort((a, b) => scoreHint(b) - scoreHint(a));
+}
+
+function adaptRlmPolicy(cfg: PluginConfig, hints: RlmHint[]): void {
+  if (!cfg.rlmDynamicPolicy) return;
+  const count = hints.length;
+  const noisy = hints.filter((h) => {
+    const t = h.chunkType.toLowerCase();
+    return t === "unknown" || t === "tool-outcome" || t === "file-context";
+  }).length;
+  const noiseRate = count > 0 ? noisy / count : 1;
+
+  rlmPolicyState.retrievalCounts.push(count);
+  rlmPolicyState.noiseRates.push(noiseRate);
+  if (rlmPolicyState.retrievalCounts.length > 40) rlmPolicyState.retrievalCounts.shift();
+  if (rlmPolicyState.noiseRates.length > 40) rlmPolicyState.noiseRates.shift();
+
+  const zeroRate =
+    rlmPolicyState.retrievalCounts.length > 0
+      ? rlmPolicyState.retrievalCounts.filter((v) => v === 0).length / rlmPolicyState.retrievalCounts.length
+      : 0;
+  const avgNoise =
+    rlmPolicyState.noiseRates.length > 0
+      ? rlmPolicyState.noiseRates.reduce((a, b) => a + b, 0) / rlmPolicyState.noiseRates.length
+      : 0;
+
+  if (avgNoise >= 0.6) {
+    rlmPolicyState.minScore = Math.min(0.009, rlmPolicyState.minScore + 0.0005);
+  } else if (zeroRate >= 0.7) {
+    rlmPolicyState.minScore = Math.max(0.0015, rlmPolicyState.minScore - 0.0004);
+  } else {
+    const target = cfg.rlmBaseMinScore;
+    if (rlmPolicyState.minScore < target) rlmPolicyState.minScore = Math.min(target, rlmPolicyState.minScore + 0.0002);
+    else if (rlmPolicyState.minScore > target) rlmPolicyState.minScore = Math.max(target, rlmPolicyState.minScore - 0.0002);
+  }
+}
+
 function getPluginConfig(api: PluginApi): PluginConfig {
   const raw = api?.config?.plugins?.entries?.["pi-context"]?.config ?? {};
   return {
@@ -124,8 +190,11 @@ function getPluginConfig(api: PluginApi): PluginConfig {
     yamsBinary: String(raw.yamsBinary ?? DEFAULTS.yamsBinary),
     yamsCwd: String(raw.yamsCwd ?? DEFAULTS.yamsCwd),
     rlmCollection: String(raw.rlmCollection ?? DEFAULTS.rlmCollection),
+    rlmGlobalTag: String(raw.rlmGlobalTag ?? DEFAULTS.rlmGlobalTag),
     rlmSimilarity: Number(raw.rlmSimilarity ?? DEFAULTS.rlmSimilarity),
     rlmLimit: Number(raw.rlmLimit ?? DEFAULTS.rlmLimit),
+    rlmBaseMinScore: Number(raw.rlmBaseMinScore ?? DEFAULTS.rlmBaseMinScore),
+    rlmDynamicPolicy: raw.rlmDynamicPolicy ?? DEFAULTS.rlmDynamicPolicy,
     autoStore: raw.autoStore ?? DEFAULTS.autoStore,
     storeLimit: Number(raw.storeLimit ?? DEFAULTS.storeLimit),
     continuityWatchdogEnabled: raw.continuityWatchdogEnabled ?? DEFAULTS.continuityWatchdogEnabled,
@@ -227,13 +296,13 @@ async function runYams(
   }
 }
 
-function parseSearchResults(stdout: string, seen: Set<string>): RlmHint[] {
+function parseSearchResults(cfg: PluginConfig, stdout: string, seen: Set<string>): RlmHint[] {
   try {
     const parsed = JSON.parse(stdout);
     const results = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.results) ? parsed.results : [];
     const hints: RlmHint[] = [];
     for (const row of results) {
-      if (typeof row?.score !== "number" || row.score < RLM_MIN_SCORE) continue;
+      if (typeof row?.score !== "number" || row.score < currentRlmMinScore(cfg)) continue;
       if (typeof row?.snippet !== "string" || !row.snippet.trim()) continue;
       const id = String(row?.id || row?.path || row?.snippet.slice(0, 80));
       if (seen.has(id)) continue;
@@ -242,7 +311,7 @@ function parseSearchResults(stdout: string, seen: Set<string>): RlmHint[] {
         id,
         snippet: normalizeText(row.snippet),
         score: row.score,
-        chunkType: String(row?.metadata?.chunk_type || "unknown"),
+        chunkType: String(row?.metadata?.chunk_type || (typeof row?.path === "string" ? String(row.path).match(/-([\w][\w-]*)-\d+$/)?.[1] : "") || "unknown"),
         path: typeof row?.path === "string" ? row.path : undefined,
       });
     }
@@ -282,7 +351,7 @@ async function searchRlm(cfg: PluginConfig, query: string, sessionTag?: string):
       });
     }
     if (sessionResult.code === 0 && sessionResult.stdout) {
-      hints.push(...parseSearchResults(sessionResult.stdout, seen).slice(0, cfg.rlmLimit));
+      hints.push(...parseSearchResults(cfg, sessionResult.stdout, seen).slice(0, cfg.rlmLimit));
     }
   }
 
@@ -294,7 +363,7 @@ async function searchRlm(cfg: PluginConfig, query: string, sessionTag?: string):
       "--collection",
       cfg.rlmCollection,
       "--tags",
-      "rlm",
+      cfg.rlmGlobalTag,
       "--similarity",
       String(cfg.rlmSimilarity),
       "--limit",
@@ -310,11 +379,13 @@ async function searchRlm(cfg: PluginConfig, query: string, sessionTag?: string):
       });
     }
     if (globalResult.code === 0 && globalResult.stdout) {
-      hints.push(...parseSearchResults(globalResult.stdout, seen).slice(0, remaining));
+      hints.push(...parseSearchResults(cfg, globalResult.stdout, seen).slice(0, remaining));
     }
   }
 
-  return hints.slice(0, cfg.rlmLimit);
+  const ranked = rankHints(hints).slice(0, cfg.rlmLimit);
+  adaptRlmPolicy(cfg, ranked);
+  return ranked;
 }
 
 async function storeRlmChunk(cfg: PluginConfig, sessionTag: string, chunk: MemoryChunk, index: number): Promise<boolean> {
@@ -324,7 +395,7 @@ async function storeRlmChunk(cfg: PluginConfig, sessionTag: string, chunk: Memor
   await fs.writeFile(tmpFile, normalized, "utf8");
   const name = `openclaw-rlm-${Date.now().toString(36)}-${chunk.chunkType}-${index}`;
   const metadata = `chunk_type=${chunk.chunkType},source=openclaw,owner=pi-context,session_tag=${sessionTag}`;
-  const tags = `rlm,pi-session-memory,${sessionTag}`;
+  const tags = `${cfg.rlmGlobalTag},pi-session-memory,${sessionTag}`;
   try {
     const result = await runYams(
       cfg,
@@ -619,6 +690,7 @@ export default function piContextPlugin(api: PluginApi): void {
       retryCount: 0,
       lastRecoveryAt: 0,
       pendingRecovery: null,
+      storeInFlight: false,
     };
     sessions.set(sessionKey, created);
     return created;
@@ -635,6 +707,8 @@ export default function piContextPlugin(api: PluginApi): void {
         `Sidecar model: ${cfg.sidecarModel}`,
         `YAMS cwd: ${cfg.yamsCwd}`,
         `Collection: ${cfg.rlmCollection}`,
+        `Global tag: ${cfg.rlmGlobalTag}`,
+        `Min score: ${currentRlmMinScore(cfg).toFixed(4)} (dynamic=${cfg.rlmDynamicPolicy})`,
         `Session tag: ${session.sessionTag}`,
         `Session key: ${sessionKey}`,
         `Tracked sessions: ${sessions.size}`,
@@ -816,42 +890,60 @@ export default function piContextPlugin(api: PluginApi): void {
         }
         if (!userPrompt.trim() || !assistantText.trim()) return null;
 
-        let chunks = await extractMemoryChunksWithSidecar(cfg, userPrompt, assistantText);
-        log(api, "info", "sidecar extraction result", {
-          sessionTag: session.sessionTag,
-          sidecarModel: cfg.sidecarModel,
-          chunks: chunks.length,
-        });
-        if (chunks.length === 0) {
-          chunks = heuristicMemoryChunks(userPrompt, assistantText, cfg.storeLimit);
-          log(api, "warn", "sidecar extraction empty; using heuristic fallback", {
+        if (session.storeInFlight) {
+          log(api, "debug", "auto-store skipped; previous store still in flight", {
             sessionTag: session.sessionTag,
-            heuristicChunks: chunks.length,
           });
-        }
-        log(api, "info", "auto-store extraction complete", {
-          sessionTag: session.sessionTag,
-          sidecarModel: cfg.sidecarModel,
-          chunks: chunks.length,
-        });
-        if (chunks.length === 0) return null;
-
-        let stored = 0;
-        for (let i = 0; i < chunks.length; i += 1) {
-          log(api, "info", "attempting memory store", {
-            sessionTag: session.sessionTag,
-            chunkType: chunks[i].chunkType,
-            chunkPreview: truncate(chunks[i].content, 140),
-            index: i,
-          });
-          const ok = await storeRlmChunk(cfg, session.sessionTag, chunks[i], i);
-          if (ok) stored += 1;
+          return null;
         }
 
-        log(api, "info", `stored ${stored}/${chunks.length} memory chunks`, {
-          sessionTag: session.sessionTag,
-          sidecarModel: cfg.sidecarModel,
-        });
+        session.storeInFlight = true;
+        void (async () => {
+          try {
+            let chunks = await extractMemoryChunksWithSidecar(cfg, userPrompt, assistantText);
+            log(api, "info", "sidecar extraction result", {
+              sessionTag: session.sessionTag,
+              sidecarModel: cfg.sidecarModel,
+              chunks: chunks.length,
+            });
+            if (chunks.length === 0) {
+              chunks = heuristicMemoryChunks(userPrompt, assistantText, cfg.storeLimit);
+              log(api, "warn", "sidecar extraction empty; using heuristic fallback", {
+                sessionTag: session.sessionTag,
+                heuristicChunks: chunks.length,
+              });
+            }
+            log(api, "info", "auto-store extraction complete", {
+              sessionTag: session.sessionTag,
+              sidecarModel: cfg.sidecarModel,
+              chunks: chunks.length,
+            });
+            if (chunks.length === 0) return;
+
+            const storeOps = chunks.map((chunk, i) => {
+              log(api, "info", "attempting memory store", {
+                sessionTag: session.sessionTag,
+                chunkType: chunk.chunkType,
+                chunkPreview: truncate(chunk.content, 140),
+                index: i,
+              });
+              return storeRlmChunk(cfg, session.sessionTag, chunk, i);
+            });
+            const results = await Promise.all(storeOps);
+            const stored = results.filter(Boolean).length;
+            log(api, "info", `stored ${stored}/${chunks.length} memory chunks`, {
+              sessionTag: session.sessionTag,
+              sidecarModel: cfg.sidecarModel,
+              rlmMinScore: currentRlmMinScore(cfg),
+              rlmGlobalTag: cfg.rlmGlobalTag,
+            });
+          } catch (error) {
+            log(api, "warn", "agent_end auto-store async task failed", error);
+          } finally {
+            session.storeInFlight = false;
+          }
+        })();
+
         return null;
       } catch (error) {
         log(api, "warn", "agent_end auto-store failed", error);
@@ -868,6 +960,9 @@ export default function piContextPlugin(api: PluginApi): void {
     enabledDcs: cfg.enabledDcs,
     yamsCwd: cfg.yamsCwd,
     rlmCollection: cfg.rlmCollection,
+    rlmGlobalTag: cfg.rlmGlobalTag,
+    rlmBaseMinScore: cfg.rlmBaseMinScore,
+    rlmDynamicPolicy: cfg.rlmDynamicPolicy,
     autoStore: cfg.autoStore,
     storeLimit: cfg.storeLimit,
     continuityWatchdogEnabled: cfg.continuityWatchdogEnabled,

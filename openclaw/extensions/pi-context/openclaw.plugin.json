@@ -26,6 +26,10 @@
         "type": "string",
         "default": "pi-session-memory"
       },
+      "rlmGlobalTag": {
+        "type": "string",
+        "default": "rlm-openclaw"
+      },
       "rlmSimilarity": {
         "type": "number",
         "default": 0.001
@@ -34,6 +38,14 @@
         "type": "integer",
         "minimum": 1,
         "default": 3
+      },
+      "rlmBaseMinScore": {
+        "type": "number",
+        "default": 0.003
+      },
+      "rlmDynamicPolicy": {
+        "type": "boolean",
+        "default": true
       },
       "autoStore": {
         "type": "boolean",
@@ -80,7 +92,7 @@
       },
       "sidecarModel": {
         "type": "string",
-        "default": "qwen_qwen3.5-4b"
+        "default": "qwen_qwen3.5-9b"
       },
       "dcsCli": {
         "type": "string",
@@ -109,11 +121,20 @@
     "rlmCollection": {
       "label": "RLM Collection"
     },
+    "rlmGlobalTag": {
+      "label": "RLM Global Tag"
+    },
     "rlmSimilarity": {
       "label": "RLM Similarity"
     },
     "rlmLimit": {
       "label": "RLM Result Limit"
+    },
+    "rlmBaseMinScore": {
+      "label": "RLM Base Min Score"
+    },
+    "rlmDynamicPolicy": {
+      "label": "RLM Dynamic Policy"
     },
     "autoStore": {
       "label": "Auto Store Memory"

@@ -1,0 +1,47 @@
+services:
+  hermes:
+    platform: linux/amd64
+    depends_on:
+      searxng:
+        condition: service_healthy
+    build:
+      context: ..
+      dockerfile: hermes/Dockerfile
+    image: hermes-local:latest
+    container_name: hermes-local
+    command: gateway run
+    restart: unless-stopped
+    shm_size: 1gb
+    env_file:
+      - ./.env
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      MESSAGING_CWD: /workspace/dotfiles
+    volumes:
+      - ${HOME}/.hermes:/opt/data
+      - hermes_yams:/opt/data/yams
+      - ${HOME}/Documents/depend/dotfiles:/workspace/dotfiles
+      - ${HOME}/research:/workspace/research
+    ports:
+      - 127.0.0.1:8642:8642
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: hermes-searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_BIND_ADDRESS=0.0.0.0
+      - SEARXNG_PORT=8080
+    volumes:
+      - ../openclaw/searxng:/etc/searxng
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header='X-Forwarded-For: 127.0.0.1' --header='X-Real-IP: 127.0.0.1' -qO- 'http://127.0.0.1:8080/search?q=health&format=json' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  hermes_yams:
+    name: hermes_yams

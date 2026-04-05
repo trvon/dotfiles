@@ -73,9 +73,10 @@ Recommended plugin config for this repo:
           "enabledDcs": false,
           "yamsCwd": "/workspace/dotfiles",
           "rlmCollection": "pi-session-memory",
+          "rlmGlobalTag": "rlm-openclaw",
           "rlmSimilarity": 0.001,
           "rlmLimit": 3,
-          "sidecarModel": "qwen_qwen3.5-4b"
+          "sidecarModel": "qwen_qwen3.5-9b"
         }
       }
     }

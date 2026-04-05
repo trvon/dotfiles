@@ -1,2 +1,6 @@
 # Pi agent backups (git history serves this purpose)
 pi/backups/
+
+# Local Hermes secrets
+hermes/.env
+hermes/.env.local

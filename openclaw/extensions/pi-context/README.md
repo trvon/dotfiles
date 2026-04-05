@@ -110,8 +110,11 @@ stays optional.
 - `yamsBinary` - default `yams`
 - `yamsCwd` - repo scope for retrieval
 - `rlmCollection` - default `pi-session-memory`
+- `rlmGlobalTag` - default `rlm-openclaw`
 - `rlmSimilarity` - default `0.001`
 - `rlmLimit` - default `3`
+- `rlmBaseMinScore` - default `0.003`
+- `rlmDynamicPolicy` - default `true` (adapts min score from retrieval quality/noise)
 - `autoStore` - default `true`
 - `storeLimit` - default `3`
 - `continuityWatchdogEnabled` - default `true`
@@ -121,7 +124,7 @@ stays optional.
 - `activityHeartbeatMs` - default `1800000`
 - `activityHeartbeatPollMs` - default `300000`
 - `lmstudioBaseUrl` - default `http://host.docker.internal:1234/v1`
-- `sidecarModel` - default background model for extractor/briefing tasks (`qwen_qwen3.5-4b`)
+- `sidecarModel` - default background model for extractor/briefing tasks (`qwen_qwen3.5-9b`)
 - `dcsCli` - default `research-agent`
 - `dcsContextProfile` - default `small`
 

@@ -5,9 +5,10 @@ Source of truth for this Pi setup: `~/Documents/depend/dotfiles/pi`.
 ## What is tracked
 
 - `settings.json` (global behavior, model picker, package list)
-- `models.json` (LM Studio provider + model registry)
+- `models.json` (llama.cpp router + fallback provider registry)
 - `health-watchdog-cron.example.json` (cron prompt template)
 - `extensions/*.ts` and `extensions/*.md`
+- `tests/preflight.mjs` (config consistency check)
 - `tests/smoke.mjs` (extension smoke checks)
 
 Not tracked on purpose:
@@ -39,30 +40,46 @@ Optional cron activation:
 cp ~/.pi/agent/health-watchdog-cron.example.json ~/.pi/agent/health-watchdog-cron.json
 ```
 
+## First check
+
+Borrowing the best operational pattern from `ultraworkers/claw-code`: treat `/doctor` as the first health check after every sync or model change.
+
+```bash
+node ~/Documents/depend/dotfiles/pi/tests/preflight.mjs
+```
+
+Then open Pi and run:
+
+```text
+/doctor
+```
+
 ## Current defaults
 
-- `defaultThinkingLevel` is `high` in `settings.json`.
-- Primary `unsloth/qwen3.5-35b-a3b` is configured at `262144` context in `models.json`.
-- Models in `models.json` now set `maxTokens` up to each model's `contextWindow` to minimize `stopReason=length` truncation during long tool-planning turns.
+- `defaultProvider` is `llama-cpp` and targets the local router at `http://127.0.0.1:8080/v1`.
+- `defaultThinkingLevel` is `low`; `hideThinkingBlock` is enabled because the primary Gemma path is non-thinking.
+- Primary `bartowski/google_gemma-4-26B-A4B-it-GGUF:Q8_0` is configured as the main chat model.
 - Package dependency is pinned: `npm:@sage-protocol/pi-adapter@0.1.5` in `settings.json`.
 - Compaction triggers at ~64k tokens (`COMPACTION_RATIO=0.25` * 262k). Tuned for M4 Max performance sweet spot.
 - Context window sanity floor: if LM Studio reports `loaded_context_length < 10%` of configured, the configured value is used instead (catches the n_ctx=4096 bug).
 - RLM retrieval uses `--similarity 0.001` to bypass YAMS's default 0.7 threshold; the `RLM_MIN_SCORE=0.003` filter applies after.
 - RLM uses tiered retrieval: session-scoped memories first (tag `session:<id>`), then global cross-session memories (tag `rlm`) to fill remaining slots. Each stored chunk gets three tags: `rlm`, `pi-session-memory`, and `session:<rlmSessionId>`. Session IDs use the format `pi-<base36-timestamp>` (compact, sortable, unique per session).
-- All LLM sidecar calls use inactivity-based timeouts instead of wall-clock timeouts. The timer resets on every streaming event; abort only fires when no events arrive within the threshold. 35b calls (oracle, research critic) use 45s; 9b calls (optimizer, watchdog verifier, RLM extractor, compaction summarizer) use 20s.
+- The harness now keeps explicit `llama-cpp` routing for the local Gemma stack and retains `MiniMax-M2.7-highspeed` for delegation-oriented optimizer passes.
+- All LLM sidecar calls use inactivity-based timeouts instead of wall-clock timeouts. The timer resets on every streaming event; abort only fires when no events arrive within the threshold. Gemma primary calls use 45s; MiniMax delegation calls and Gemma E4B research/security passes use 20-30s.
 
 ## Model routing
 
 | Role | Model | Rationale |
 |------|-------|-----------|
-| Main chat | `unsloth/qwen3.5-35b-a3b` | Primary, high-accuracy |
-| Optimizer | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
-| Research optimizer | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
-| Oracle | `unsloth/qwen3.5-35b-a3b` | Validation needs accuracy |
-| Watchdog verifier | `openai/gpt-oss-20b` | Sidecar, speed-optimized |
-| RLM extractor | `openai/gpt-oss-20b` | Sidecar, falls back to heuristic |
-| Compaction summarizer | `openai/gpt-oss-20b` | Sidecar, falls back to heuristic |
-| DCS enrichment | `unsloth/qwen3.5-35b-a3b` | Via global `research-agent` CLI |
+| Main chat / orchestrator | `bartowski/google_gemma-4-26B-A4B-it-GGUF:Q8_0` | Primary local llama.cpp model |
+| Delegate model | `MiniMax-M2.7-highspeed` | Claw-style delegated work / optimizer path |
+| Research optimizer | `MiniMax-M2.7-highspeed` | Same delegated path for prompt shaping |
+| Oracle | `bartowski/google_gemma-4-E4B-it-GGUF:Q8_0` | Lightweight validation sidecar |
+| Watchdog verifier | `bartowski/google_gemma-4-E4B-it-GGUF:Q8_0` | Lightweight verifier sidecar |
+| RLM extractor | `bartowski/google_gemma-4-E4B-it-GGUF:Q8_0` | Sidecar extraction path |
+| Compaction summarizer | `bartowski/google_gemma-4-E4B-it-GGUF:Q8_0` | Sidecar summarization path |
+| Research / security research | `bartowski/google_gemma-4-E4B-it-GGUF:Q8_0` | Pi-side research and security-review path |
+| DCS executor / critic | `Gemma 4 E4B` / `Qwen 3.5 9B` | Configured separately in the DCS agent |
 
 Set `PI_RLM_EXTRACTOR_MODE=heuristic` to disable model-based extraction and use the regex/pattern heuristic instead.
 Set `PI_COMPACTION_MODEL` to route compaction summarization to a sidecar model instead of the main 35b model.
@@ -72,16 +89,17 @@ Set `PI_RLM_DCS_SESSION_ENRICHMENT=1` to enable DCS session-start context enrich
 ## Recommended env baseline
 
 ```bash
-export PI_PRIMARY_MODEL=unsloth/qwen3.5-35b-a3b
+export PI_PRIMARY_MODEL=bartowski/google_gemma-4-26B-A4B-it-GGUF:Q8_0
 
-# Optimizer + research optimizer: routed to lighter 9b model for speed
-export PI_OPTIMIZER_PROVIDER=lmstudio
-export PI_OPTIMIZER_MODEL=openai/gpt-oss-20b
-export PI_OPTIMIZER_RESEARCH_MODEL=openai/gpt-oss-20b
+# Claw-style delegation: keep the orchestrator on Gemma, delegate via MiniMax
+export PI_OPTIMIZER_PROVIDER=minimax
+export PI_OPTIMIZER_MODEL=MiniMax-M2.7-highspeed
+export PI_OPTIMIZER_RESEARCH_MODEL=MiniMax-M2.7-highspeed
 
-# Oracle: stays on primary 35b model for accuracy
-export PI_ORACLE_MODEL="$PI_PRIMARY_MODEL"
-export PI_ORACLE_INACTIVITY_MS=45000          # Inactivity timeout for 35b oracle call
+# Local research / verifier / summarization sidecars: use Gemma 4 E4B on the same router
+export PI_ORACLE_PROVIDER=llama-cpp
+export PI_ORACLE_MODEL=bartowski/google_gemma-4-E4B-it-GGUF:Q8_0
+export PI_ORACLE_INACTIVITY_MS=45000          # Inactivity timeout for Gemma E4B oracle call
 
 export PI_HYBRID_YAMS_ENABLED=1
 export PI_HYBRID_YAMS_TIMEOUT_MS=12000
@@ -93,15 +111,16 @@ export PI_HYBRID_PROMPT_PREVIEW_CHARS=700
 export PI_HYBRID_COMPACTION_RATIO=0.25
 export PI_HYBRID_COMPACTION_MIN_TOKENS=54000
 export PI_HYBRID_COMPACTION_SAFETY_HEADROOM=16384
-export PI_OPTIMIZER_INACTIVITY_MS=20000        # Inactivity timeout for 9b optimizer call
+export PI_OPTIMIZER_INACTIVITY_MS=20000        # Inactivity timeout for GPT-OSS 20B optimizer call
 # Uncomment to hard-override effective context window (bypasses LM Studio query):
 # export PI_HYBRID_CONTEXT_WINDOW_OVERRIDE=75000
 
 export PI_HEALTH_WATCHDOG_MODEL_STALL_MS=1200000
 export PI_HEALTH_WATCHDOG_MODEL_SILENT_MS=20000
-# Watchdog verifier: routed to lighter 9b model for speed
-export PI_HEALTH_WATCHDOG_VERIFIER_MODEL=openai/gpt-oss-20b
-export PI_HEALTH_WATCHDOG_VERIFIER_INACTIVITY_MS=20000  # Inactivity timeout for 9b verifier
+# Watchdog verifier: Gemma E4B sidecar
+export PI_HEALTH_WATCHDOG_VERIFIER_PROVIDER=llama-cpp
+export PI_HEALTH_WATCHDOG_VERIFIER_MODEL=bartowski/google_gemma-4-E4B-it-GGUF:Q8_0
+export PI_HEALTH_WATCHDOG_VERIFIER_INACTIVITY_MS=20000  # Inactivity timeout for Gemma E4B verifier
 export PI_HEALTH_WATCHDOG_RECOVER_ON_TERMINATION=1
 export PI_HEALTH_WATCHDOG_TERMINATION_MODE=balanced
 export PI_HEALTH_WATCHDOG_TERMINATION_MIN_COMPLETE_CHARS=900
@@ -113,12 +132,12 @@ export PI_HEALTH_WATCHDOG_WRITE_SCHEMA_MAX_ERRORS=2
 export PI_HEALTH_WATCHDOG_WRITE_SCHEMA_GUARD_COOLDOWN_MS=45000
 export PI_HEALTH_WATCHDOG_FINAL_TAIL_GRACE_MS=15000
 
-# RLM extractor: model-based extraction using 9b (falls back to heuristic on failure)
+# RLM extractor: model-based extraction using Gemma E4B (falls back to heuristic on failure)
 export PI_RLM_EXTRACTOR_MODE=model
-export PI_RLM_EXTRACTOR_PROVIDER=lmstudio
-export PI_RLM_EXTRACTOR_MODEL=openai/gpt-oss-20b
+export PI_RLM_EXTRACTOR_PROVIDER=llama-cpp
+export PI_RLM_EXTRACTOR_MODEL=bartowski/google_gemma-4-E4B-it-GGUF:Q8_0
 export PI_RLM_EXTRACTOR_MAX_TOKENS=1200
-export PI_RLM_EXTRACTOR_INACTIVITY_MS=20000    # Inactivity timeout for 9b RLM extractor
+export PI_RLM_EXTRACTOR_INACTIVITY_MS=20000    # Inactivity timeout for Gemma E4B RLM extractor
 export PI_RLM_EXTRACTOR_MAX_INPUT_CHARS=12000
 # RLM retrieval: lower similarity lets YAMS return more candidates; RLM_MIN_SCORE filters after
 export PI_RLM_SEARCH_SIMILARITY=0.001
@@ -131,13 +150,13 @@ export PI_COMPACTION_TIMEOUT_MS=60000      # Max wait time for compaction before
 export PI_CONTEXT_BUDGET_WARN_TOKENS=200000 # Token count for critical YAMS-first budget warning
 export PI_CONTEXT_BUDGET_STEER_TOKENS=80000 # Token count for YAMS-first steering when dir paths detected
 
-# Compaction summarizer: routes summarization to 9b instead of main 35b model
-# Falls back to heuristic summary if 9b fails/times out
-export PI_COMPACTION_MODEL=openai/gpt-oss-20b
-export PI_COMPACTION_PROVIDER=lmstudio
-export PI_COMPACTION_INACTIVITY_MS=30000       # Inactivity timeout for 9b summarization call (default raised from 20s to 30s for GPU contention at turn boundaries)
-export PI_COMPACTION_MAX_INPUT_CHARS=24000     # Max chars of serialized conversation to send to 9b
-export PI_COMPACTION_MAX_TOKENS=4096           # Max output tokens for 9b summary
+# Compaction summarizer: routes summarization to Gemma E4B instead of the main model
+# Falls back to heuristic summary if the sidecar fails/times out
+export PI_COMPACTION_MODEL=bartowski/google_gemma-4-E4B-it-GGUF:Q8_0
+export PI_COMPACTION_PROVIDER=llama-cpp
+export PI_COMPACTION_INACTIVITY_MS=30000       # Inactivity timeout for sidecar summarization call
+export PI_COMPACTION_MAX_INPUT_CHARS=24000     # Max chars of serialized conversation to send to sidecar
+export PI_COMPACTION_MAX_TOKENS=4096           # Max output tokens for sidecar summary
 
 # DCS integration for compaction: opt-in multi-hop summarization via research-agent CLI
 # When enabled, compaction tries DCS first, then falls back to 9b, then heuristic
@@ -155,8 +174,9 @@ export PI_COMPACTION_MAX_TOKENS=4096           # Max output tokens for 9b summar
 
 export PI_RESEARCH_DCS_ROOT=/Users/trevon/work/tools/yams/external/agent
 export PI_RESEARCH_FRAMEWORK_CLI=research-agent
-export PI_RESEARCH_CRITIC_MODEL="$PI_PRIMARY_MODEL"
-export PI_RESEARCH_CRITIC_INACTIVITY_MS=45000  # Inactivity timeout for 35b critic call
+export PI_RESEARCH_CRITIC_PROVIDER=llama-cpp
+export PI_RESEARCH_CRITIC_MODEL=bartowski/google_gemma-4-E4B-it-GGUF:Q8_0
+export PI_RESEARCH_CRITIC_INACTIVITY_MS=45000  # Inactivity timeout for Gemma E4B critic call
 
 export PI_RUNTIME_TRACE_FILE=~/.pi/agent/runtime-trace.jsonl
 export PI_HYBRID_TRACE_FILE=~/.pi/agent/hybrid-optimizer.jsonl
@@ -199,6 +219,7 @@ export PI_HYBRID_YAMS_TIMEOUT_MS=10000
 - Hybrid: `/hybrid`, `/hybrid-last`, `/hybrid-audit`, `/hybrid-proof-forward`, `/hybrid-hints`, `/hybrid-reset`, `/hybrid-proof`, `/hybrid-proof-research`, `/oracle-proof`
 - RLM: `/rlm`, `/rlm-deep-recall <topic>`
 - Ultrawork harness: tool interface `ultrawork` (JSON actions: help, status, submit, dispatch, ingest_tasks, list_tasks, add_task, set_task, mode, reset) plus command wrappers `/ultrawork [objective]`, `/ultrawork-help`, `/task [list|add|start|done|cancel|reset]`
+- Ultrawork objectives now explicitly tell the agent to start broad work with YAMS `query` -> `suggest_context` so directory/file prioritization is retrieval-backed instead of purely heuristic.
 - Ultrawork state is session-backed (`ultrawork-state` custom entries). Do not use file writes as trigger flow.
 - Watchdog: `/watchdog-proof`, `/watchdog-proof-gate`, `/watchdog-proof-termination`, `/watchdog-proof-termination-complete`, `/watchdog-proof-termination-ambiguous`, `/watchdog-proof-termination-post-complete`, `/watchdog-proof-termination-duplicate`, `/watchdog-proof-termination-user-override`, `/watchdog-proof-write-schema-loop`, `/watchdog-proof-final-tail`
 - Research: `/research-status`, `/research-framework-status`, `/research-gather <topic>`, `/research-critic`, `/research-pack`, `/research-review <topic>`
@@ -213,6 +234,7 @@ export PI_HYBRID_YAMS_TIMEOUT_MS=10000
 ## Smoke tests
 
 ```bash
+node ~/Documents/depend/dotfiles/pi/tests/preflight.mjs
 node ~/Documents/depend/dotfiles/pi/tests/smoke.mjs
 ```
 
@@ -238,7 +260,7 @@ DCS provides multi-hop retrieval and synthesis via the `research-agent` CLI (glo
 
 3. **On-demand deep recall** (`/rlm-deep-recall <topic>`): User-triggered command that runs DCS with a `large` context profile for thorough multi-hop retrieval on any topic. Returns synthesized results covering relevant decisions, file paths, code patterns, and known issues.
 
-DCS configuration lives in `~/work/tools/yams/external/agent/configs/models.yaml`. Default executor and critic both point to `unsloth/qwen3.5-35b-a3b` (262k context, 4096 max output, 300s timeout).
+DCS configuration lives in `~/work/tools/yams/external/agent/configs/models.yaml`. If you want the full stack on Gemma, update that external config separately; the Pi harness changes here only cover the Pi-side default model routing.
 
 ## Compaction branchEntries fallback
 

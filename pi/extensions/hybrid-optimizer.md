@@ -8,7 +8,7 @@ Installed file:
 
 ## What it does
 
-1. Uses optimizer models with profile routing: default optimizer is `unsloth/qwen3.5-35b-a3b` (research and general), with fallbacks if unavailable.
+1. Uses optimizer models with profile routing: for the current claw-style setup, Gemma stays the orchestrator while delegated optimizer work routes to `MiniMax-M2.7-highspeed`.
 2. Stores optimizer state with `appendEntry` so it survives restarts without bloating LLM context.
 3. Injects a short per-turn execution brief via `before_agent_start`.
 4. Deduplicates repeated Sage skill/tool boilerplate in the `context` hook.
@@ -28,18 +28,18 @@ Installed file:
 - `/hybrid-proof-forward` - probe forwarded optimized prompt formatting/tracing.
 - `/hybrid-reset` - clear carry-state memory.
 - `/hybrid-hints` - show currently loaded YAMS hints.
-- `/hybrid-proof` - run one-shot optimizer probe against `PI_OPTIMIZER_MODEL` (fallback `unsloth/qwen3.5-27b`).
+- `/hybrid-proof` - run one-shot optimizer probe against `PI_OPTIMIZER_MODEL`.
 - `/hybrid-proof-research` - probe research optimizer routing/model.
 - `/oracle-proof` - probe oracle validator model and parser.
 
 ## Environment knobs
 
-- `PI_OPTIMIZER_PROVIDER` (default `lmstudio`)
-- `PI_PRIMARY_MODEL` (default `unsloth/qwen3.5-35b-a3b`; shared default used when optimizer/oracle model envs are unset)
-- `PI_OPTIMIZER_MODEL` (default `unsloth/qwen3.5-35b-a3b`)
-- `PI_OPTIMIZER_RESEARCH_MODEL` (default `unsloth/qwen3.5-35b-a3b`)
+- `PI_OPTIMIZER_PROVIDER` (recommended `minimax` for delegated optimizer passes)
+- `PI_PRIMARY_MODEL` (recommended `google/gemma-4-26B-A4B-it`; shared default used when optimizer/oracle model envs are unset)
+- `PI_OPTIMIZER_MODEL` (recommended `MiniMax-M2.7-highspeed`)
+- `PI_OPTIMIZER_RESEARCH_MODEL` (recommended `MiniMax-M2.7-highspeed`)
 - `PI_ORACLE_ENABLED` (`1`/`0`, default `1`)
-- `PI_ORACLE_PROVIDER` (default `lmstudio`)
+- `PI_ORACLE_PROVIDER` (recommended `llama-cpp` when using the local Gemma router)
 - `PI_ORACLE_MODEL` (default `PI_PRIMARY_MODEL`)
 - `PI_ORACLE_MAX_TOKENS` (default `160`)
 - `PI_ORACLE_TIMEOUT_MS` (default `12000`)

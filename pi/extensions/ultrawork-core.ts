@@ -33,6 +33,8 @@ export function buildUltraworkPrompt(goal: string): string {
   return [
     "[ultrawork]",
     "Use parallel orchestration mode.",
+    "Before splitting broad work, use the YAMS `query` tool with `suggest_context` on the objective to surface relevant snapshots/files.",
+    "Use the returned context suggestions to prioritize which directories and files to inspect first.",
     "Split work into 3-6 independent streams and execute independent tool calls in parallel.",
     "Keep one canonical progress list; do not duplicate finished work.",
     "Merge outputs into a single concise synthesis with concrete file-level changes.",

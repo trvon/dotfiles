@@ -1,7 +1,7 @@
 /**
  * model-backend.ts — Shared model-state provider abstraction.
  *
- * Probes MLX (127.0.0.1:8080), llama-cpp (127.0.0.1:8090),
+ * Probes MLX (127.0.0.1:8080), llama-cpp (127.0.0.1:8080),
  * LM Studio (127.0.0.1:1234), and LlamaBarn (127.0.0.1:2276) to detect
  * which backend is running and retrieve model state / loaded context info.
  *
@@ -102,11 +102,11 @@ const BACKEND_PREFERENCE = parseBackendPref(process.env.PI_MODEL_BACKEND);
 const LLAMABARN_MODELS_URL =
   process.env.PI_LLAMABARN_MODELS_URL || "http://127.0.0.1:2276/v1/models";
 const LLAMACPP_PRIMARY_HEALTH_URL =
-  process.env.PI_LLAMACPP_PRIMARY_HEALTH_URL || "http://127.0.0.1:8090/health";
+  process.env.PI_LLAMACPP_PRIMARY_HEALTH_URL || "http://127.0.0.1:8080/health";
 const LLAMACPP_SIDECAR_HEALTH_URL =
-  process.env.PI_LLAMACPP_SIDECAR_HEALTH_URL || "http://127.0.0.1:8091/health";
+  process.env.PI_LLAMACPP_SIDECAR_HEALTH_URL || "http://127.0.0.1:8080/health";
 const LLAMACPP_PRIMARY_SLOTS_URL =
-  process.env.PI_LLAMACPP_PRIMARY_SLOTS_URL || "http://127.0.0.1:8090/slots";
+  process.env.PI_LLAMACPP_PRIMARY_SLOTS_URL || "http://127.0.0.1:8080/slots";
 const MLX_PRIMARY_HEALTH_URL =
   process.env.PI_MLX_PRIMARY_HEALTH_URL || "http://127.0.0.1:8080/health";
 const MLX_PRIMARY_MODELS_URL =
@@ -243,9 +243,9 @@ export function getSidecarConfig(provider: string): SidecarConfig {
  * Resolve the provider name to use for sidecar model registry lookups.
  *
  * For most backends (llamabarn) this returns the same provider.
- * For llama-cpp, the primary model lives on port 8090 ("llama-cpp") but
- * sidecar models live on port 8091 ("llama-cpp-sidecar"). The
- * `_sidecarProvider` field in the sidecar config handles this redirect.
+ * For llama-cpp, the harness may use the same router endpoint for both the
+ * primary and sidecar registries. The `_sidecarProvider` field still handles
+ * role-based model lookup even when the base URL is shared.
  */
 export function resolveSidecarProvider(provider: string): string {
   const sc = getSidecarConfig(provider);
@@ -496,7 +496,7 @@ async function isReachable(url: string, timeoutMs: number): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// llama-cpp provider (raw llama-server on 127.0.0.1:8090/8091)
+// llama-cpp provider (OpenAI-compatible llama.cpp router on 127.0.0.1:8080)
 // ---------------------------------------------------------------------------
 
 /**

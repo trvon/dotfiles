@@ -22,7 +22,11 @@ services:
       - ${HOME}/.hermes:/opt/data
       - hermes_yams:/opt/data/yams
       - ${HOME}/Documents/depend/dotfiles:/workspace/dotfiles
+      - ${HOME}/Documents/depend/dotfiles/hermes/paperbridge/config.toml:/root/.config/paperbridge/config.toml:ro
       - ${HOME}/research:/workspace/research
+      - ${HOME}/work/crypto/sage-protocol/packages/sage-hermes:/workspace/sage-hermes
+      - ${HOME}/work/crypto/sage-protocol/packages/sage:/workspace/sage
+      - ${HOME}/work/crypto/sage-protocol/packages/sage-plugin-sdk-py:/workspace/sage-plugin-sdk-py
     ports:
       - 127.0.0.1:8642:8642
 

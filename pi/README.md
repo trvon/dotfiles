@@ -14,7 +14,7 @@ This directory previously held a full custom Pi hareness dotfiles setup (extensi
 All previous dotfiles (extensions, tests, models.json, settings.json, health-watchdog, hybrid-optimizer, semantic-compressor, compaction-guard, research-orchestrator, runtime-trace, stream-saver, ultrawork harness, MLX wrapper, and backups) are preserved in:
 
 ```
-../pi-archive/
+./archive/
 ```
 
-See `../pi-archive/README.md` for the original documentation and setup instructions.
+See `./archive/README.md` for the original documentation and setup instructions.

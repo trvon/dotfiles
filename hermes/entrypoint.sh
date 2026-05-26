@@ -29,7 +29,7 @@ if [ ! -f "${HERMES_HOME}/SOUL.md" ]; then
 fi
 
 if [ -d "${INSTALL_DIR}/skills" ]; then
-  python3 "${INSTALL_DIR}/tools/skills_sync.py"
+  PYTHONPATH="${INSTALL_DIR}:${PYTHONPATH:-}" "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/tools/skills_sync.py"
 fi
 
 if [ ! -f "${YAMS_CONFIG_DIR}/config.toml" ]; then
@@ -38,4 +38,4 @@ fi
 
 yams daemon start --socket "${YAMS_SOCKET}" --pid-file /tmp/yams-daemon.pid --restart
 
-exec hermes "$@"
+exec "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/hermes" "$@"

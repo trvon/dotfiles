@@ -1,12 +1,12 @@
 # Hermes Local Container
 
-Repo-local Hermes setup wired to a host `llama.cpp` server running on `http://127.0.0.1:8080` with model alias `gemma4`.
+Repo-local Hermes setup wired to MiniMax through Hermes Agent's built-in `minimax` provider, using `MiniMax-M2.7` by default.
 
 This version keeps Hermes simple:
 
 - Hermes runs in Docker
 - terminal commands run locally inside the Hermes container
-- `llama.cpp` stays on the host
+- MiniMax runs remotely through `MINIMAX_API_KEY` from `hermes/.env`
 - no Docker socket or child sandbox containers
 - on Apple Silicon, the container runs as `linux/amd64` because the upstream Hermes image is not publishing a native arm64 manifest here
 - Hermes's OpenAI-compatible API server is enabled on `http://127.0.0.1:8642/v1`
@@ -18,12 +18,12 @@ This version keeps Hermes simple:
 
 On first start, the custom entrypoint seeds `~/.hermes/config.yaml` with these defaults:
 
-- `model.provider: custom`
-- `model.base_url: http://host.docker.internal:8080/v1`
-- `model.default: gemma4`
+- `model.provider: minimax`
+- `model.default: MiniMax-M2.7`
+- `model.context_length: 204800`
 - `terminal.backend: local`
 - `terminal.cwd: /workspace/dotfiles`
-- text-only auxiliary tasks routed to the same local model
+- text-only auxiliary tasks routed to the same MiniMax model
 - `mcp_servers.searxng` configured to use the internal `searxng` service
 - `mcp_servers.yams` configured to use the in-container YAMS daemon
 
@@ -39,6 +39,7 @@ If `~/.hermes/config.yaml` already exists, it is left alone. If you already have
 mkdir -p ~/.hermes
 mkdir -p ~/research
 cp hermes/.env.example hermes/.env
+# edit hermes/.env and set MINIMAX_API_KEY
 
 docker compose -f hermes/compose.yml up -d --build
 ```
@@ -57,22 +58,23 @@ Open an interactive Hermes session against the same persisted state:
 docker compose -f hermes/compose.yml run --rm hermes chat
 ```
 
-## Verify Host llama.cpp Reachability
+## Configure MiniMax
 
-From the container:
+Hermes has a first-class `minimax` provider. Put your MiniMax key in the repo-local env file used by Compose:
+
+```bash
+cp hermes/.env.example hermes/.env
+$EDITOR hermes/.env  # set MINIMAX_API_KEY=...
+```
+
+By default, Hermes uses the MiniMax global endpoint (`https://api.minimax.io/v1`) and `MiniMax-M2.7`. If you need to override the endpoint, uncomment `MINIMAX_BASE_URL` in `hermes/.env`. MiniMax's Hermes guide recommends Token Plan API keys for Hermes Agent.
+
+Quick key/model check from the container:
 
 ```bash
 docker compose -f hermes/compose.yml run --rm hermes \
-  python3 -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:8080/v1/models').read().decode())"
+  python3 -c "import os, urllib.request; req=urllib.request.Request('https://api.minimax.io/v1/models', headers={'Authorization': 'Bearer '+os.environ['MINIMAX_API_KEY']}); print(urllib.request.urlopen(req, timeout=30).read().decode()[:1000])"
 ```
-
-On the host, tool calling in `llama.cpp` needs `--jinja` enabled. Quick check:
-
-```bash
-curl http://127.0.0.1:8080/props
-```
-
-The response should include a `chat_template` field.
 
 ## YAMS MCP
 
@@ -144,7 +146,7 @@ curl http://127.0.0.1:8642/v1/models \
 
 ## Notes
 
-- The bundled config routes text-only auxiliary tasks to `gemma4` as well. Vision is not forced to the local model because that only works if your `llama.cpp` model/server is multimodal.
+- The bundled config routes text-only auxiliary tasks to `MiniMax-M2.7` as well. Vision is not explicitly configured here.
 - The container mounts this repo at `/workspace/dotfiles` and `~/research` at `/workspace/research`.
 - The image adds `git` and `curl` on top of the official Hermes container so coding tasks inside the repo work normally.
 - Runtime secrets are injected from `hermes/.env`; the mounted `~/.hermes/.env` can stay free of local credentials.

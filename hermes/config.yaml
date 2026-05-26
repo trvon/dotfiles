@@ -1,8 +1,8 @@
 model:
-  provider: custom
-  default: gemma4
-  base_url: http://host.docker.internal:8080/v1
-  context_length: 32768
+  provider: minimax
+  default: MiniMax-M2.7
+  context_length: 204800
+  max_tokens: 65536
 
 terminal:
   backend: local
@@ -14,32 +14,32 @@ compression:
   enabled: true
   threshold: 0.5
   summary_provider: main
-  summary_model: gemma4
+  summary_model: MiniMax-M2.7
 
 auxiliary:
   web_extract:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
   approval:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
   session_search:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
   skills_hub:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
   mcp:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
   flush_memories:
     provider: main
-    model: gemma4
+    model: MiniMax-M2.7
     timeout: 60
 
 mcp_servers:
@@ -61,3 +61,15 @@ mcp_servers:
 
 display:
   streaming: true
+
+gateway:
+  timeout: 300
+
+approvals:
+  mode: off
+  timeout: 60
+skills:
+  external_dirs:
+    - /workspace/dotfiles/hermes/skills
+    - /root/.local/share/sage/ide-exports/hermes/libraries
+

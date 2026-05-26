@@ -3,6 +3,7 @@ FROM --platform=linux/amd64 nousresearch/hermes-agent:latest
 ARG MCP_SEARXNG_VERSION=1.0.2
 
 ENV YAMS_DAEMON_SOCKET=/tmp/yams-daemon.sock
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -11,6 +12,10 @@ RUN apt-get update \
     dirmngr \
     git \
     gpg \
+    clang \
+    libssl-dev \
+    pkg-config \
+    python3-matrix-nio \
     libolm-dev \
     procps \
     tini \
@@ -23,8 +28,8 @@ RUN apt-get update \
   && apt-get update \
   && apt-get install -y --no-install-recommends \
     yams \
-  && npm install -g "mcp-searxng@${MCP_SEARXNG_VERSION}" \
-  && pip install --no-cache-dir "matrix-nio[e2e]" --break-system-packages \
+  && curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal \
+  && npm install -g "mcp-searxng@${MCP_SEARXNG_VERSION}" paperbridge \
   && npm cache clean --force \
   && rm -rf /var/lib/apt/lists/*
 

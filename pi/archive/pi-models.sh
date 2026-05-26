@@ -281,7 +281,7 @@ MLX_KV_START="${PI_MLX_KV_START:-1024}"
 
 # Aliases (used in OpenAI-compatible API as model names)
 PRIMARY_ALIAS="qwen3.5-35b-a3b"
-SIDECAR_ALIAS="qwen3.5-9b"
+SIDECAR_ALIAS="openai/gpt-oss-20b"
 
 # PID and log files — llama-cpp
 PRIMARY_PID="$MODELS_DIR/llama-primary.pid"
@@ -615,7 +615,7 @@ cmd_start_mlx() {
     log "│  PRIMARY  ✗  :$mlx_primary_port  (not ready)"
   fi
   if $sidecar_ok; then
-    log "│  SIDECAR  ✓  :$mlx_sidecar_port  qwen3.5-9b (8-bit, $MLX_SIDECAR_SOURCE)"
+    log "│  SIDECAR  ✓  :$mlx_sidecar_port  openai/gpt-oss-20b ($MLX_SIDECAR_SOURCE)"
   else
     log "│  SIDECAR  ✗  :$mlx_sidecar_port  (not ready)"
   fi

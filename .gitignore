@@ -4,3 +4,6 @@ pi/backups/
 # Local Hermes secrets
 hermes/.env
 hermes/.env.local
+
+# Local Paperbridge config/secrets
+hermes/paperbridge/config.toml

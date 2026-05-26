@@ -1,0 +1,51 @@
+{
+  "lastChangelogVersion": "0.62.0",
+  "defaultProvider": "llama-cpp",
+  "defaultModel": "bartowski/google_gemma-4-26B-A4B-it-GGUF:Q8_0",
+  "defaultThinkingLevel": "low",
+  "thinkingBudgets": {
+    "minimal": 512,
+    "low": 2048,
+    "medium": 6144,
+    "high": 10240
+  },
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 12288,
+    "keepRecentTokens": 12000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 2,
+    "baseDelayMs": 1500,
+    "maxDelayMs": 20000
+  },
+  "enabledModels": [
+    "bartowski/google_gemma-4-26B-A4B-it-GGUF:Q8_0",
+    "bartowski/google_gemma-4-31B-it-GGUF:Q8_0",
+    "bartowski/google_gemma-4-E4B-it-GGUF:Q8_0",
+    "MiniMax-M2.7-highspeed",
+    "unsloth/Qwen3.5-27B-GGUF:BF16",
+    "unsloth/Qwen3.5-27B-GGUF:Q8_0",
+    "unsloth/Qwen3.5-35B-A3B-GGUF:BF16",
+    "unsloth/Qwen3.5-9B-GGUF:BF16"
+  ],
+  "packages": [
+    "npm:@sage-protocol/pi-adapter@0.1.5"
+  ],
+  "hideThinkingBlock": true,
+  "showHardwareCursor": true,
+  "ports": {
+    "mlx": {
+      "primary": 8080,
+      "sidecar": 8081
+    },
+    "llama-cpp": {
+      "primary": 8080,
+      "sidecar": 8080
+    }
+  },
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "treeFilterMode": "all"
+}

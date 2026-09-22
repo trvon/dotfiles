@@ -10,7 +10,7 @@ into `~/.pi/agent/`. `README.md` and `archive/` are skipped (`.stow-local-ignore
 
 | File | Purpose |
 |------|---------|
-| `.pi/agent/settings.json` | Default model (`deepseek/deepseek-v4-flash`, thinking `high`), theme, package list |
+| `.pi/agent/settings.json` | Default model (`deepseek/deepseek-flash`, V4.1 Flash, thinking `high`), theme, package list |
 | `.pi/agent/models.json` | Custom `server` provider (RunInfra OpenAI-compatible endpoint); key read from `$RUNINFRA_API_KEY` |
 | `.pi/agent/AGENTS.md` | Global instructions loaded into every session |
 | `.pi/agent/npm/package.json` | Pinned versions of the installed pi packages |

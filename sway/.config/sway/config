@@ -242,11 +242,21 @@ exec ~/.config/sway/scripts/watch-wallpaper.sh
 exec_always ~/.config/sway/scripts/start-swayidle.sh
 
 input type:touchpad {
-    dwt disabled
     tap enabled
     tap_button_map lmr
-    middle_emulation enabled
+    drag enabled
+    dwt enabled                 # ignore touchpad while typing (palm rejection)
+    click_method clickfinger    # 2-finger click = right, 3-finger = middle
+    natural_scroll enabled
+    scroll_method two_finger
+    accel_profile adaptive
+    pointer_accel 0.3
 }
+
+# Touchpad gestures
+bindgesture swipe:3:right workspace prev_on_output
+bindgesture swipe:3:left workspace next_on_output
+bindgesture swipe:4:up fullscreen toggle
 
 input type:keyboard {
     repeat_rate 50

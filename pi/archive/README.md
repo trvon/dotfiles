@@ -17,22 +17,13 @@ Not tracked on purpose:
 - `~/.pi/agent/sessions/`
 - local trace/runtime artifacts (`*.jsonl`, caches, binaries)
 
-## Quick sync (dotfiles -> live Pi)
+## Restoring (historical)
 
-```bash
-mkdir -p ~/.pi/agent/extensions && \
-cp ~/Documents/depend/dotfiles/pi/settings.json ~/.pi/agent/settings.json && \
-cp ~/Documents/depend/dotfiles/pi/models.json ~/.pi/agent/models.json && \
-cp ~/Documents/depend/dotfiles/pi/health-watchdog-cron.example.json ~/.pi/agent/health-watchdog-cron.example.json && \
-cp ~/Documents/depend/dotfiles/pi/extensions/*.ts ~/.pi/agent/extensions/ && \
-cp ~/Documents/depend/dotfiles/pi/extensions/*.md ~/.pi/agent/extensions/
-```
-
-Then inside Pi run:
-
-```text
-/reload
-```
+These files are archived and no longer installed. To try one again, copy it
+from `pi/archive/` into `~/.pi/agent/` (e.g. `archive/extensions/*.ts` into
+`~/.pi/agent/extensions/`) and run `/reload` inside Pi. Note they import the
+old `@mariozechner/pi-coding-agent` package name; current pi is
+`@earendil-works/pi-coding-agent`.
 
 Optional cron activation:
 

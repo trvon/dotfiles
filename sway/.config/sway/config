@@ -1,0 +1,299 @@
+# Distro drop-ins: /etc/sway/config.d/50-systemd-user.conf imports DISPLAY,
+# WAYLAND_DISPLAY, SWAYSOCK and XDG_CURRENT_DESKTOP=sway into systemd + D-Bus
+# (fixes slow GTK startup and lets xdg-desktop-portal-wlr work).
+include /etc/sway/config.d/*
+
+# Wayland-native app env vars live in ~/.config/environment.d/10-wayland.conf
+# (sway has no setenv command).
+
+# See `man 5 sway` for a complete reference.
+
+#set mod key to super
+set $mod Mod4
+
+# Use Mouse+$mod to drag floating windows to their wanted position
+floating_modifier $mod normal
+
+#key bindings bindings go here. Using --to-code so that they work in different keyboard layouts
+bindsym --to-code {
+    $mod+Return exec ghostty
+
+    # program launcher (using Rofi theme)
+    $mod+space exec ~/.config/rofi/launchers/type-1/launcher.sh
+    
+    # clipboard history picker (cliphist)
+    $mod+Ctrl+v exec cliphist list | rofi -dmenu -p clipboard | cliphist decode | wl-copy
+
+    # kill focused window
+    $mod+shift+q kill
+
+    # lock screen and idle screen off shortly after
+    $mod+z exec ~/.config/sway/scripts/lock.sh
+    $mod+shift+g exec ~/.config/sway/scripts/lock.sh
+
+    # change focus
+    $mod+h focus left
+    $mod+j focus down
+    $mod+k focus up
+    $mod+l focus right
+
+    # alternatively, you can use the cursor keys:
+    $mod+left focus left
+    $mod+down focus down
+    $mod+up focus up
+    $mod+right focus right
+
+    # move focused window
+    $mod+shift+h move left
+    $mod+shift+j move down
+    $mod+shift+k move up
+    $mod+shift+l move right
+
+    # alternatively, you can use the cursor keys:
+    $mod+shift+left move left
+    $mod+shift+down move down
+    $mod+shift+up move up
+    $mod+shift+right move right
+
+    # split in horizontal orientation
+    $mod+shift+v splith
+
+    # split in vertical orientation
+    $mod+v splitv
+
+    # enter fullscreen mode for the focused container
+    $mod+f fullscreen
+
+    # change container layout (stacked, tabbed, toggle split)
+    $mod+s layout stacking
+    $mod+w layout tabbed
+    $mod+e layout toggle split
+
+    # toggle tiling / floating
+    $mod+shift+f floating toggle
+
+    # change focus between tiling / floating windows
+    $mod+o focus mode_toggle
+
+    # focus the parent container
+    $mod+a focus parent
+
+    # focus the child container
+    $mod+shift+a focus child
+
+    # switch to workspace
+    $mod+1 workspace 1
+    $mod+2 workspace 2
+    $mod+3 workspace 3
+    $mod+4 workspace 4
+    $mod+5 workspace 5
+    $mod+6 workspace 6
+    $mod+7 workspace 7
+    $mod+8 workspace 8
+    $mod+9 workspace 9
+    $mod+0 workspace 10
+    $mod+comma workspace prev_on_output
+    $mod+period workspace next_on_output
+
+
+    # move focused container to workspace
+    $mod+shift+1 move container to workspace 1
+    $mod+shift+2 move container to workspace 2
+    $mod+Shift+3 move container to workspace 3
+    $mod+Shift+4 move container to workspace 4
+    $mod+Shift+5 move container to workspace 5
+    $mod+Shift+6 move container to workspace 6
+    $mod+Shift+7 move container to workspace 7
+    $mod+Shift+8 move container to workspace 8
+    $mod+Shift+9 move container to workspace 9
+    $mod+Shift+0 move container to workspace 10
+    $mod+Shift+period move container to workspace next_on_output
+    $mod+Shift+comma move container to workspace prev_on_output
+
+    # reload the configuration file
+    $mod+shift+c reload
+    # exit sway (with confirmation)
+    $mod+Shift+e exec swaynag -t warning -m 'Exit sway? This ends your Wayland session.' -B 'Exit' 'swaymsg exit'
+
+    #resize key
+    $mod+r mode "resize"
+
+    # Screenshot a window
+    $mod+Print exec sway-screenshot -m window
+    # Screenshot a monitor
+    Print exec sway-screenshot -m output
+    # Screenshot a region
+    $mod+Shift+Print exec sway-screenshot -m region
+
+    # show drop down terminal
+    $mod+Escape scratchpad show
+
+    # open a drop-down terminal
+    $mod+shift+Escape exec ghostty --gtk-single-instance=false --title=drop_down_term
+
+    # open a file manager
+    $mod+shift+space exec pcmanfm
+
+    # open nmtui dialog
+    $mod+shift+n exec ghostty --gtk-single-instance=false --title=wifi_term -e nmtui-connect
+
+    # open audio mixer
+    $mod+shift+m exec pavucontrol
+
+    # Volume controls (using PipeWire-native wpctl)
+    XF86AudioRaiseVolume exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ --limit 1.5
+    XF86AudioLowerVolume exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+    XF86AudioMute exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+
+    # Screen brightness controls (brightnessctl)
+    XF86MonBrightnessUp exec brightnessctl set 10%+
+    XF86MonBrightnessDown exec brightnessctl set 10%-
+
+    # Toggle microphone mute (PTT-style for mumble, discord)
+    $mod+tab exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
+
+    # Toggle light/dark theme manually
+    $mod+t exec ~/.config/sway/scripts/auto-theme.sh toggle
+}
+
+# resize window (you can also use the mouse for that)
+mode "resize" {
+        # These bindings trigger as soon as you enter the resize mode
+
+        # Pressing left will shrink the window’s width.
+        # Pressing right will grow the window’s width.
+        # Pressing up will shrink the window’s height.
+        # Pressing down will grow the window’s height.
+        bindsym --to-code {
+            h resize shrink width 10 px or 10 ppt
+            j resize grow height 10 px or 10 ppt
+            k resize shrink height 10 px or 10 ppt
+            l resize grow width 10 px or 10 ppt
+
+            # same bindings, but for the arrow keys
+            Left resize shrink width 10 px or 10 ppt
+            Down resize grow height 10 px or 10 ppt
+            Up resize shrink height 10 px or 10 ppt
+            Right resize grow width 10 px or 10 ppt
+
+            # back to normal: Enter or Escape
+            Return mode "default"
+            Escape mode "default"
+        }
+}
+
+#window rules for my menu popup and drop down terminal using the scratchpad
+for_window [title="^menu_term$"] floating enable, resize set width 50 ppt height 50 ppt, move center
+for_window [title="^screensaver$"] fullscreen toggle global
+for_window [title="^drop_down_term$"] floating enable, resize set width 100 ppt height 60 ppt, move position 0px 0px, move scratchpad
+for_window [title="^wifi_term$"] floating enable, resize set width 36 ppt height 39 ppt, move center
+for_window [app_id="^pavucontrol$"] floating enable, resize set width 36 ppt height 39 ppt, move center
+
+# float dialogs and pop-ups
+for_window [window_role="pop-up|bubble|dialog|task_dialog"] floating enable
+for_window [window_type="dialog"] floating enable
+for_window [title="(?:Open|Save) (?:File|Folder|As)"] floating enable, resize set width 60 ppt height 60 ppt
+
+# don't idle/lock while something is fullscreen (video, presentations)
+for_window [app_id=".*"] inhibit_idle fullscreen
+for_window [class=".*"] inhibit_idle fullscreen
+
+
+# general settings
+gaps inner 11
+gaps outer 0
+smart_gaps on
+smart_borders on
+# hide mouse on inactivity
+seat * hide_cursor 10000
+font Hasklug Nerd Font Medium 10
+default_floating_border pixel 0
+default_border pixel 0
+hide_edge_borders both
+focus_follows_mouse no
+# border colors
+client.focused		#ff6e67 #ff6e67 #ff6e67 #ffc1bd #ff6e67
+client.unfocused	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
+client.focused_inactive	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
+
+# startup programs
+# Wayland-native screen color temperature adjustment (New York coordinates: lat 40.7, long -74.0)
+exec wlsunset -l 40.7 -L -74.0
+exec nm-applet --indicator
+exec blueman-applet
+exec mako
+
+# Clipboard history (see $mod+Ctrl+v)
+exec wl-paste --watch cliphist store
+
+# Output profiles (~/.config/kanshi/config)
+exec kanshi
+
+# GNOME Polkit Authentication Agent (for GUI administrative password prompts)
+exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
+
+# Automatic light/dark theme switcher daemon
+exec ~/.config/sway/scripts/auto-theme.sh daemon
+
+# Watch and apply GNOME background settings dynamically
+exec ~/.config/sway/scripts/watch-wallpaper.sh
+
+# Idle manager (locks screen after 5 min, turns off displays after 10 min, locks before suspend)
+exec_always ~/.config/sway/scripts/start-swayidle.sh
+
+input type:touchpad {
+    tap enabled
+    tap_button_map lmr
+    drag enabled
+    dwt enabled                 # ignore touchpad while typing (palm rejection)
+    click_method clickfinger    # 2-finger click = right, 3-finger = middle
+    natural_scroll enabled
+    scroll_method two_finger
+    accel_profile adaptive
+    pointer_accel 0.3
+}
+
+# Touchpad gestures
+bindgesture swipe:3:right workspace prev_on_output
+bindgesture swipe:3:left workspace next_on_output
+bindgesture swipe:4:up fullscreen toggle
+
+input type:keyboard {
+    repeat_rate 50
+    repeat_delay 250
+}
+
+bar {
+    swaybar_command waybar
+}
+
+# keyboard layouts
+input * xkb_layout "us"
+
+# wallpaper settings
+output "*" background wallpaper.png fill
+
+# Enable Adaptive Sync (VRR/G-Sync/FreeSync) on all outputs
+output * adaptive_sync on
+
+#gnome theme settings
+set $gnome-schema org.gnome.desktop.interface
+exec_always {
+    # Set fallback values for font, icons, and cursor
+    gsettings set $gnome-schema icon-theme 'Adwaita'
+    gsettings set $gnome-schema cursor-theme 'Adwaita'
+    gsettings set $gnome-schema font-name 'Noto Sans 10'
+    gsettings set $gnome-schema monospace-font-name 'Hack Nerd Font 10'
+}
+
+# Apply current time-based theme (light/dark) automatically on startup/reload
+exec_always ~/.config/sway/scripts/auto-theme.sh auto
+
+# Gnome Keyring (secrets only; SSH is handled by gcr-ssh-agent for GUI apps
+# and keychain in shells)
+exec gnome-keyring-daemon --start --components=secrets,pkcs11
+
+# Clamshell Mode
+set $laptop eDP-1
+bindswitch --reload --locked lid:on output $laptop disable
+bindswitch --reload --locked lid:off output $laptop enable

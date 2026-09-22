@@ -1,0 +1,30 @@
+{
+  "providers": {
+    "server": {
+      "baseUrl": "https://api.runinfra.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "$RUNINFRA_API_KEY",
+      "compat": {
+        "supportsDeveloperRole": true,
+        "supportsReasoningEffort": true
+      },
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "deepseek v4 flash (runinfra)",
+          "contextWindow": 131072
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "deepseek v4 pro (runinfra)",
+          "contextWindow": 131072
+        },
+        {
+          "id": "qwen3-8-27b",
+          "name": "qwen3 8 27b (runinfra)",
+          "contextWindow": 131072
+        }
+      ]
+    }
+  }
+}

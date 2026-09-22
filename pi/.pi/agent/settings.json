@@ -1,0 +1,22 @@
+{
+  "lastChangelogVersion": "0.87.0",
+  "packages": [
+    "npm:lsp-pi",
+    "npm:pi-subagents",
+    "npm:@trevonistrevon/pi-loop",
+    "npm:pi-web-access",
+    "npm:pi-lens",
+    "npm:@sage-protocol/pi-adapter",
+    "npm:pi-tscg",
+    "npm:pi-intercom",
+    "npm:pi-prompt-template-model",
+    "npm:pi-runinfra",
+    "npm:pi-mcp-adapter"
+  ],
+  "defaultProvider": "deepseek",
+  "defaultModel": "deepseek-v4-flash",
+  "defaultThinkingLevel": "high",
+  "theme": "dark",
+  "hideThinkingBlock": true,
+  "quietStartup": true
+}

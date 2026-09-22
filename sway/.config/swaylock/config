@@ -1,0 +1,38 @@
+# Swaylock effects configuration test
+screenshots
+clock
+indicator
+effect-blur=7x5
+effect-vignette=0.5:0.5
+fade-in=0.2
+grace=2
+
+font=sans-serif
+timestr=%I:%M %p
+datestr=%A, %B %d
+
+indicator-radius=100
+indicator-thickness=7
+
+ring-color=ff6e67
+key-hl-color=ffc1bd
+line-color=00000000
+inside-color=00000088
+separator-color=00000000
+text-color=ffffff
+
+ring-ver-color=ff6e67
+inside-ver-color=00000088
+text-ver-color=ffffff
+
+ring-clear-color=ffc1bd
+inside-clear-color=00000088
+text-clear-color=ffffff
+
+ring-caps-lock-color=ffc1bd
+inside-caps-lock-color=00000088
+text-caps-lock-color=ffffff
+
+ring-wrong-color=ff6e67
+inside-wrong-color=00000088
+text-wrong-color=ff6e67

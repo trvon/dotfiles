@@ -1,0 +1,17 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "dependencies": {
+    "@sage-protocol/pi-adapter": "^0.5.1",
+    "@trevonistrevon/pi-loop": "^0.7.15",
+    "lsp-pi": "^1.0.5",
+    "pi-intercom": "^0.13.0",
+    "pi-lens": "^4.2.1",
+    "pi-mcp-adapter": "^2.36.0",
+    "pi-prompt-template-model": "^0.12.3",
+    "pi-runinfra": "^1.1.0",
+    "pi-subagents": "^0.70.1",
+    "pi-tscg": "^0.2.4",
+    "pi-web-access": "^0.30.0"
+  }
+}

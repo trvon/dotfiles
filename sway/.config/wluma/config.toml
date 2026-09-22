@@ -1,0 +1,8 @@
+[als.webcam]
+video = 0   # Typically /dev/video0
+thresholds = { 0 = "night", 15 = "dark", 30 = "dim", 45 = "normal", 60 = "bright", 75 = "outdoors" }
+
+[[output.backlight]]
+name = "eDP-1"                                # Match this with swaymsg output
+path = "/sys/class/backlight/intel_backlight" # Match this with your path from
+capturer = "wayland"                          # Wayland is supported on Sway

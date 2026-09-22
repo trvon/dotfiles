@@ -1,9 +1,22 @@
-# Pi agent backups (git history serves this purpose)
-pi/backups/
+# Editor / OS junk
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Local Hermes secrets
-hermes/.env
-hermes/.env.local
+# Secrets -- never commit
+secrets.zsh
+**/.env
+**/.env.*
+**/auth.json
+*.pem
 
-# Local Paperbridge config/secrets
-hermes/paperbridge/config.toml
+# pi runtime state (see pi/README.md)
+models-store.json*
+*.bak-*
+run-history.jsonl
+sessions/
+node_modules/
+
+# zsh caches
+.zcompdump*

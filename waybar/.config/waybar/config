@@ -1,0 +1,201 @@
+{
+    "layer": "top", // Waybar at top layer
+    "position": "top", // Waybar position (top|bottom|left|right)
+    "height": 30,
+    //"width": 1350, // Waybar width
+    // Choose the order of the modules idle_inhibitor
+    "modules-left": ["sway/workspaces", "sway/mode", "sway/window"],
+    "modules-right": ["privacy", "cpu", "temperature", "memory", "custom/disk", "idle_inhibitor", "custom/dnd", "power-profiles-daemon", "backlight", "battery", "network", "pulseaudio", "bluetooth", "sway/language", "clock", "tray"],
+     // Modules configuration
+    // "sway/workspaces": {
+    //     "disable-scroll": true,
+    //     "all-outputs": true,
+    //     "format": "{name}: {icon}",
+    //     "format-icons": {
+    //         "1": "",
+    //         "2": "",
+    //         "3": "",
+    //         "4": "",
+    //         "5": "",
+    //         "urgent": "",
+    //         "focused": "",
+    //         "default": ""
+    //     }
+    // },
+    "sway/workspaces": {
+        "disable-scroll": true,
+        "all-outputs": true,
+        "format": "{icon}",
+        "format-icons": {
+            "1": "一",
+            "2": "二",
+            "3": "三",
+            "4": "四",
+            "5": "五",
+            "6": "六",
+            "7": "七",
+            "8": "八",
+            "9": "九",
+            "10": "十"
+            //"1": "⠁",
+            //"2": "⠃",
+            //"3": "⠉",
+            //"4": "⠙",
+            //"5": "⠑",
+            //"6": "⠋",
+            //"7": "⠛",
+            //"8": "⠓",
+            //"9": "⠊",
+            //"10": "⠚"
+        }
+    },
+    "sway/mode": {
+        "format": "<span style=\"italic\">{}</span>"
+    },
+    "sway/window": {
+        "format": "{}"
+        //"max-length": 100
+    },
+    "idle_inhibitor": {
+        "format": "{icon}",
+        "tooltip-format-activated": "Caffeine ON - idle/sleep inhibited",
+        "tooltip-format-deactivated": "Caffeine OFF - click to keep awake",
+        "format-icons": {
+            "activated": "󰅶",
+            "deactivated": ""
+        }
+    },
+    "tray": {
+        "icon-size": 14,
+        "spacing": 5
+    },
+    "clock": {
+        "tooltip-format": "{:%A %B %d %Y | %H:%M}\n\n{calendar}",
+        "calendar": {
+            "mode": "month",
+            "iso8601": true,
+            "on-scroll": 1,
+            "format": {
+                "today": "<span color='#ff6e67'><b>{}</b></span>",
+                "days": "<span color='#d8dee9'>{}</span>",
+                "months": "<span color='#fabd2f'>{}</span>"
+            }
+        },
+        "format": " {:%a %d %b  %H:%M}",
+        "format-alt": " {:%F  %H:%M:%S}",
+        //"timezones": [ "Athens" ],
+        //"max-length": 200
+        "interval": 60
+    },
+    "cpu": {
+        "format": "﬙ {usage}%",
+        "on-click": "ghostty --gtk-single-instance=false -e btop"
+    },
+    "memory": {
+        "format": " {}%",
+        "on-click": "ghostty --gtk-single-instance=false -e btop"
+    },
+    "temperature": {
+        // "thermal-zone": 2,
+        // "hwmon-path": "/sys/class/hwmon/hwmon2/temp1_input",
+        "critical-threshold": 95,
+        "format-critical": "{temperatureC}°C ",
+        "format": "{temperatureC}°C "
+    },
+    "backlight": {
+        // "device": "acpi_video1",
+        "format": "{percent}% {icon}",
+        "format-icons": ["", ""],
+        "on-scroll-up": "brightnessctl set 5%+",
+        "on-scroll-down": "brightnessctl set 5%-"
+    },
+    "privacy": {
+        "icon-size": 14,
+        "modules": [
+            { "type": "screenshare" },
+            { "type": "audio-in" }
+        ]
+    },
+    "custom/dnd": {
+        "exec": "makoctl mode | grep -qx do-not-disturb && echo '󰂛' || echo '󰂚'",
+        "on-click": "makoctl mode -t do-not-disturb; pkill -RTMIN+8 waybar",
+        "signal": 8,
+        "interval": 30,
+        "tooltip": false
+    },
+    "battery": {
+        "states": {
+            // "good": 95,
+            "warning": 30,
+            "critical": 15
+        },
+        "format": "{icon} {capacity}%",
+        // "format-good": "", // An empty format will hide the module
+        // "format-full": "",
+        //"format-icons": ["", "", "", "", ""]
+        "format-icons": ["", "", "", "", "", "", "", "", "", ""]
+    },
+    "power-profiles-daemon": {
+        "format": "{icon} {profile}",
+        "tooltip-format": "Power profile: {profile}\nDriver: {driver}",
+        "tooltip": true,
+        "format-icons": {
+            "default": "",
+            "performance": "",
+            "balanced": "",
+            "power-saver": ""
+        }
+    },
+    "battery#bat2": {
+        "bat": "BAT2"
+    },
+    "network": {
+        // "interface": "wlp2s0", // (Optional) To force the use of this interface
+        "format-wifi": " {essid} ({signalStrength}%)",
+        //"format-ethernet": "{ifname}: {ipaddr}/{cidr} ",
+        "format-ethernet": " {ifname}",
+        "format-disconnected": "⚠ Disconnected",
+        "on-click": "ghostty --gtk-single-instance=false --title=wifi_term -e nmtui-connect",
+        "tooltip": false
+    },
+    "pulseaudio": {
+        "scroll-step": 1,
+        "format": "{icon} {volume}%",
+        "format-bluetooth": "{icon} {volume}%",
+        "format-muted":"muted ",
+        "format-icons": {
+            "headphones": "",
+            "handsfree": "",
+            "headset": "",
+            "phone": "",
+            "portable": "",
+            "car": "",
+            "default": ["", ""]
+        },
+        "on-click": "pavucontrol"
+    },
+    "bluetooth": {
+        "format": " {status}",
+        "format-disabled": "",
+        "format-connected": " {num_connections} connected",
+        "tooltip-format": "{controller_alias}\t{controller_address}",
+        "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
+        "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
+        "on-click": "blueman-manager"
+    },
+    "custom/disk": {
+        "format": " {}",
+        "max-length": 80,
+        "escape": false,
+        "exec": "$HOME/.local/bin/disk-stats.sh",
+        "interval": 60,
+        "on-click": "pcmanfm",
+        "tooltip": false
+    },
+
+    "sway/language": {
+        "format": " {}",
+        "max-length": 50
+    }
+}
+

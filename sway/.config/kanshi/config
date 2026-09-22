@@ -1,0 +1,12 @@
+# Output profiles -- kanshi picks the first profile whose outputs all match.
+# Find names with: swaymsg -t get_outputs
+# Lid close/open is still handled by bindswitch in the sway config.
+
+profile laptop {
+    output eDP-1 enable scale 1
+}
+
+profile docked {
+    output eDP-1 enable
+    output * enable
+}

@@ -1,0 +1,11 @@
+# mako notification daemon -- reload with `makoctl reload`
+default-timeout=8000
+max-visible=5
+border-radius=6
+
+[urgency=critical]
+default-timeout=0
+
+# Do-not-disturb: toggled from waybar (custom/dnd) or `makoctl mode -t do-not-disturb`
+[mode=do-not-disturb]
+invisible=1

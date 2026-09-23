@@ -152,6 +152,9 @@ bindsym --to-code {
     # Toggle microphone mute (PTT-style for mumble, discord)
     $mod+tab exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
 
+    # Toggle mirroring the laptop screen to the external display
+    $mod+p exec ~/.config/sway/scripts/mirror-toggle.sh
+
     # Toggle light/dark theme manually
     $mod+t exec ~/.config/sway/scripts/auto-theme.sh toggle
 }

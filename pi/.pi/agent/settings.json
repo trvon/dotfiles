@@ -14,7 +14,7 @@
     "npm:pi-mcp-adapter"
   ],
   "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-v4-flash",
+  "defaultModel": "deepseek-flash",
   "defaultThinkingLevel": "high",
   "theme": "dark",
   "hideThinkingBlock": true,

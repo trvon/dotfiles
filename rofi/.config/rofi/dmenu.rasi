@@ -1,0 +1,55 @@
+/* Compact dmenu theme, used for the clipboard picker ($mod+Ctrl+v) and any
+ * other `rofi -dmenu` use, so they match the launcher instead of falling back
+ * to rofi's built-in look. Colours come from the generated current.rasi. */
+
+@import "~/.config/rofi/colors/current.rasi"
+@import "~/.config/rofi/launchers/type-1/shared/fonts.rasi"
+
+* {
+    background-color: @background;
+    text-color:       @foreground;
+    border-color:     @selected;
+
+    normal-background:      @background;
+    normal-foreground:      @foreground;
+    selected-normal-background: @selected;
+    selected-normal-foreground: @background;
+    urgent-background:      @urgent;
+    urgent-foreground:      @background;
+}
+
+window {
+    width:         40%;
+    border:        2px;
+    border-radius: 12px;
+    padding:       12px;
+}
+
+inputbar {
+    children:    [ prompt, entry ];
+    padding:     6px 8px;
+    border:      0px;
+    border-radius: 8px;
+    background-color: @background-alt;
+}
+
+prompt {
+    padding: 0 8px 0 0;
+}
+
+listview {
+    lines:           8;
+    spacing:         4px;
+    scrollbar:       false;
+    padding:         8px 0 0 0;
+}
+
+element {
+    padding:      6px 10px;
+    border-radius: 8px;
+}
+
+element selected {
+    background-color: @selected;
+    text-color:       @background;
+}

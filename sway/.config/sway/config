@@ -21,8 +21,9 @@ bindsym --to-code {
     # program launcher (using Rofi theme)
     $mod+space exec ~/.config/rofi/launchers/type-1/launcher.sh
     
-    # clipboard history picker (cliphist)
-    $mod+Ctrl+v exec cliphist list | rofi -dmenu -p clipboard | cliphist decode | wl-copy
+    # clipboard history picker (cliphist). Uses the themed dmenu so it matches
+    # the launcher instead of rofi's built-in look.
+    $mod+Ctrl+v exec cliphist list | rofi -dmenu -theme ~/.config/rofi/dmenu.rasi -p clipboard | cliphist decode | wl-copy
 
     # kill focused window
     $mod+shift+q kill
@@ -112,8 +113,8 @@ bindsym --to-code {
 
     # reload the configuration file
     $mod+shift+c reload
-    # exit sway (with confirmation)
-    $mod+Shift+e exec swaynag -t warning -m 'Exit sway? This ends your Wayland session.' -B 'Exit' 'swaymsg exit'
+    # exit sway (with confirmation; colours come from the generated theme)
+    $mod+Shift+e exec ~/.config/sway/scripts/swaynag-exit.sh
 
     #resize key
     $mod+r mode "resize"
@@ -157,6 +158,9 @@ bindsym --to-code {
 
     # Toggle light/dark theme manually
     $mod+t exec ~/.config/sway/scripts/auto-theme.sh toggle
+
+    # Step through the wallpapers in ~/.config/sway/wallpapers
+    $mod+Shift+b exec ~/.config/sway/scripts/wallpaper-cycle.sh next
 }
 
 # resize window (you can also use the mouse for that)
@@ -209,15 +213,22 @@ smart_gaps on
 smart_borders on
 # hide mouse on inactivity
 seat * hide_cursor 10000
-font Hasklug Nerd Font Medium 10
-default_floating_border pixel 0
-default_border pixel 0
+# Keep the pointer the same size/theme in native and XWayland apps
+# (XCURSOR_THEME/XCURSOR_SIZE in environment.d cover the rest).
+seat * xcursor_theme Adwaita 24
+font JetBrainsMono Nerd Font 10
+default_floating_border pixel 2
+default_border pixel 2
 hide_edge_borders both
 focus_follows_mouse no
 # border colors
-client.focused		#ff6e67 #ff6e67 #ff6e67 #ffc1bd #ff6e67
-client.unfocused	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
-client.focused_inactive	#b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8 #b8b8b8
+# Static gruvbox-dark defaults. auto-theme.sh overrides these at runtime with
+# `swaymsg client.*` so they follow light/dark without an `include` (a missing
+# include would hard-fail sway before the generator has ever run).
+client.focused		#fabd2f #3c3836 #ebdbb2 #fabd2f #fabd2f
+client.unfocused	#928374 #1d2021 #928374 #928374 #928374
+client.focused_inactive	#928374 #1d2021 #928374 #928374 #928374
+client.urgent		#fb4934 #3c3836 #ebdbb2 #fb4934 #fb4934
 
 # startup programs
 # Wayland-native screen color temperature adjustment (New York coordinates: lat 40.7, long -74.0)
@@ -267,6 +278,14 @@ input type:keyboard {
 }
 
 bar {
+    # Plain `waybar`. Do not wrap it in a script: with a wrapper path sway
+    # starts no bar at all (verified three ways, including forwarding the
+    # `-b <bar-id>` argument sway passes). The cost of the wrapper is not worth
+    # suppressing the one real symptom, which is upstream: Waybar <= 0.15.0
+    # prints battery state ("Charging", "Discharging", ...) to stdout on every
+    # change - issue #4840, fixed by PR #4844 but not yet in a stable release.
+    # That text lands in the session journal. Revisit after `waybar --version`
+    # reports a release that includes the fix.
     swaybar_command waybar
 }
 

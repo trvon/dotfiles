@@ -1,0 +1,12 @@
+* {
+    /* Author: Aditya Shakya (adi1090x) colour-file layout, gruvbox values.
+       GENERATED COPY: this is the dark variant; auto-theme.sh copies the right
+       one to current.rasi, which the launcher theme imports. */
+
+    background:     #1d2021FF;
+    background-alt: #3c3836FF;
+    foreground:     #ebdbb2FF;
+    selected:       #fabd2fFF;
+    active:         #b8bb26FF;
+    urgent:         #fb4934FF;
+}

@@ -12,6 +12,7 @@ secrets.zsh
 *.pem
 
 # pi runtime state (see pi/README.md)
+.pi/
 models-store.json*
 *.bak-*
 run-history.jsonl

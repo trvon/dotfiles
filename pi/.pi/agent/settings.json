@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.87.0",
+  "lastChangelogVersion": "0.99.2",
   "packages": [
     "npm:lsp-pi",
     "npm:pi-subagents",
@@ -15,6 +15,7 @@
   ],
   "defaultProvider": "deepseek",
   "defaultModel": "deepseek-flash",
+  "defaultTools": ["+codemode"],
   "defaultThinkingLevel": "high",
   "theme": "dark",
   "hideThinkingBlock": true,

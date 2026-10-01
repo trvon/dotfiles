@@ -1,0 +1,37 @@
+# mako notification daemon -- TEMPLATE.
+#
+# The live config is generated from this file by:
+#   ~/.config/sway/scripts/auto-theme.sh
+# which substitutes the @PLACEHOLDER@ colour names below for the current
+# light/dark palette and then runs `makoctl reload`. Edit this template, not
+# ~/.config/mako/config (that one is generated and untracked).
+#
+# mako has no include/import directive, which is why the whole config is
+# rendered.
+
+default-timeout=8000
+max-visible=5
+max-icon-size=48
+anchor=top-right
+margin=10
+padding=10
+border-size=2
+border-radius=8
+border-color=@ACCENT@
+background-color=@BG@
+text-color=@FG@
+font=JetBrainsMono Nerd Font 10
+group-by=app-name
+icons=1
+
+[urgency=low]
+default-timeout=4000
+border-color=@BG_ALT@
+
+[urgency=critical]
+default-timeout=0
+border-color=@RED@
+
+# Do-not-disturb: toggled from waybar (custom/dnd) or `makoctl mode -t do-not-disturb`
+[mode=do-not-disturb]
+invisible=1

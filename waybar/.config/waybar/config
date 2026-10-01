@@ -3,9 +3,8 @@
     "position": "top", // Waybar position (top|bottom|left|right)
     "height": 30,
     //"width": 1350, // Waybar width
-    // Choose the order of the modules idle_inhibitor
-    "modules-left": ["sway/workspaces", "sway/mode", "sway/window"],
-    "modules-right": ["privacy", "cpu", "temperature", "memory", "custom/disk", "idle_inhibitor", "custom/dnd", "power-profiles-daemon", "backlight", "battery", "network", "pulseaudio", "bluetooth", "sway/language", "clock", "tray"],
+    "modules-left": ["sway/workspaces", "sway/mode", "sway/window", "mpris"],
+    "modules-right": ["privacy", "cpu", "temperature", "memory", "custom/disk", "idle_inhibitor", "custom/dnd", "power-profiles-daemon", "backlight", "battery", "network", "wireplumber", "bluetooth", "sway/language", "clock", "tray"],
      // Modules configuration
     // "sway/workspaces": {
     //     "disable-scroll": true,
@@ -76,9 +75,11 @@
             "iso8601": true,
             "on-scroll": 1,
             "format": {
-                "today": "<span color='#ff6e67'><b>{}</b></span>",
-                "days": "<span color='#d8dee9'>{}</span>",
-                "months": "<span color='#fabd2f'>{}</span>"
+                // No literal colours here: the tooltip is themed by CSS, so the
+                // calendar follows the light/dark palette on its own.
+                "today": "<b>{}</b>",
+                "days": "{}",
+                "months": "<b>{}</b>"
             }
         },
         "format": " {:%a %d %b  %H:%M}",
@@ -130,8 +131,8 @@
             "critical": 15
         },
         "format": "{icon} {capacity}%",
+        "format-full": "{icon}",
         // "format-good": "", // An empty format will hide the module
-        // "format-full": "",
         //"format-icons": ["", "", "", "", ""]
         "format-icons": ["", "", "", "", "", "", "", "", "", ""]
     },
@@ -146,9 +147,6 @@
             "power-saver": ""
         }
     },
-    "battery#bat2": {
-        "bat": "BAT2"
-    },
     "network": {
         // "interface": "wlp2s0", // (Optional) To force the use of this interface
         "format-wifi": " {essid} ({signalStrength}%)",
@@ -158,21 +156,16 @@
         "on-click": "ghostty --gtk-single-instance=false --title=wifi_term -e nmtui-connect",
         "tooltip": false
     },
-    "pulseaudio": {
+    "wireplumber": {
+        // Module name must match modules-right and style.css (#wireplumber).
+        // wireplumber has no format-bluetooth, and its format-icons is a
+        // volume-level array, not a device-type map (that was pulseaudio).
         "scroll-step": 1,
         "format": "{icon} {volume}%",
-        "format-bluetooth": "{icon} {volume}%",
-        "format-muted":"muted ",
-        "format-icons": {
-            "headphones": "",
-            "handsfree": "",
-            "headset": "",
-            "phone": "",
-            "portable": "",
-            "car": "",
-            "default": ["", ""]
-        },
-        "on-click": "pavucontrol"
+        "format-muted": "muted ",
+        "format-icons": ["", "", ""],
+        "on-click": "pavucontrol",
+        "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
     },
     "bluetooth": {
         "format": " {status}",
@@ -182,6 +175,14 @@
         "tooltip-format-connected": "{controller_alias}\t{controller_address}\n\n{device_enumerate}",
         "tooltip-format-enumerate-connected": "{device_alias}\t{device_address}",
         "on-click": "blueman-manager"
+    },
+    "mpris": {
+        // waybar links libplayerctl, so this works without extra packages;
+        // playerctl itself is only needed for the click action.
+        "format": "{player} - {title}",
+        "format-paused": "{player} - {title} (paused)",
+        "max-length": 45,
+        "on-click": "playerctl play-pause"
     },
     "custom/disk": {
         "format": " {}",

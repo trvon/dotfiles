@@ -1,0 +1,13 @@
+* {
+    /* Author: Aditya Shakya (adi1090x) colour-file layout, gruvbox values.
+       GENERATED COPY: light + dark variants live in gruvbox-light.rasi /
+       gruvbox-dark.rasi and auto-theme.sh copies the right one to
+       current.rasi, which the launcher theme imports. */
+
+    background:     #fbf1c7FF;
+    background-alt: #ebdbb2FF;
+    foreground:     #3c3836FF;
+    selected:       #b57614FF;
+    active:         #79740eFF;
+    urgent:         #9d0006FF;
+}

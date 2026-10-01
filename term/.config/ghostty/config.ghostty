@@ -1,4 +1,20 @@
 theme = light:Gruvbox Light,dark:Gruvbox Dark Hard
-font-family = "Fira Code"
+# The installed family is "FiraCode Nerd Font" (no space). Ghostty resolves
+# font-family through fontconfig, which does not fuzzy-match, so the old
+# "Fira Code" silently fell back to Noto Sans.
+font-family = "FiraCode Nerd Font"
 font-size = 12
 gtk-single-instance = true
+
+# Keep the cursor visible: derive it from the active theme's colours instead of
+# baking in a fixed value. Ghostty ignores guicursor colour requests from
+# applications, and an explicit cursor-color does not re-derive when the theme
+# flips, so `cell-foreground`/`cell-background` are the values that track
+# light/dark correctly (the cursor is then always the opposite of the
+# background).
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+# Don't blink: a half-period-off cursor is easier to lose track of than a
+# steady one.
+cursor-style-blink = false

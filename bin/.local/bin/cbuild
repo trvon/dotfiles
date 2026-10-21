@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cbuild - configure CMake out-of-tree into $BUILD_ROOT.
+#
+# CMake has no global "put build output here" variable (unlike cargo's
+# CARGO_TARGET_DIR), so this wrapper supplies -B for you:
+#
+#   cbuild [any cmake args]        -> cmake -S $PWD -B $BUILD_ROOT/<repo>-<hash>
+#   cmake --build $BUILD_ROOT/...  or  ninja -C $BUILD_ROOT/...
+#
+# Why: $BUILD_ROOT is the zroot/home/build dataset, which carries
+# com.sun:auto-snapshot=false, so build churn never gets pinned by sanoid
+# snapshots. In-repo ./build trees still get snapshotted and are what grew
+# zroot/home to 286G of snapshots once.
+#
+# Keep the key resolver in sync with ~/.local/bin/mbuild.
+set -euo pipefail
+
+root=${BUILD_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/build}
+
+if [[ ! -d $root ]]; then
+    mkdir -p "$root" 2>/dev/null || {
+        printf '%s: %s does not exist and cannot be created\n' "${0##*/}" "$root" >&2
+        exit 1
+    }
+fi
+if [[ ! -w $root ]]; then
+    printf '%s: %s is not writable.\n' "${0##*/}" "$root" >&2
+    printf '  Fresh ZFS datasets mount root-owned. Fix with:\n' >&2
+    printf '    sudo chown %s: %s\n' "${USER:-$LOGNAME}" "$root" >&2
+    exit 1
+fi
+
+src=$PWD
+# Name the directory after the git repo (readable) but hash the exact source
+# path, so two checkouts with the same basename never share a build tree.
+gitroot=$(git rev-parse --show-toplevel 2>/dev/null) || gitroot=$src
+name=$(basename -- "$gitroot")
+key="$name-$(printf '%s' "$src" | sha1sum | cut -c1-6)"
+build="$root/$key"
+
+# Reject -B in both forms: separate ("-B dir") and attached ("-Bdir"/"-B./dir").
+for arg in "$@"; do
+    case $arg in
+        -B*)
+            printf '%s: pass the build dir through this wrapper only, not via -B\n' "${0##*/}" >&2
+            exit 2
+            ;;
+    esac
+done
+
+printf '%s: source %s\n%s: build  %s\n' "${0##*/}" "$src" "${0##*/}" "$build" >&2
+exec cmake -S "$src" -B "$build" "$@"

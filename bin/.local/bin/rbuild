@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# rbuild - run cargo with its target directory under $BUILD_ROOT.
+#
+# Cargo does have a global variable (CARGO_TARGET_DIR), but exporting it
+# machine-wide is a trap. Build systems that shell out to `cargo build` and
+# then read <src>/target -- YAMS's libsql Meson wrap does exactly this -- look
+# in the wrong place and fail *after* a successful compile. The artifact
+# directory is a per-invocation argument, like CMake's -B and Meson's builddir:
+#
+#   rbuild build --release -> cargo build --release --target-dir $BUILD_ROOT/<repo>-<hash>/cargo-target
+#   rbuild test --workspace -> cargo test --workspace --target-dir $BUILD_ROOT/...
+#
+# Why: $BUILD_ROOT is the zroot/home/build dataset with
+# com.sun:auto-snapshot=false, so build churn never gets pinned by sanoid
+# snapshots. In-repo target/ trees still get snapshotted.
+#
+# Keep the key resolver in sync with ~/.local/bin/cbuild and mbuild.
+set -euo pipefail
+
+root=${BUILD_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/build}
+if [[ ! -d $root ]]; then
+	mkdir -p "$root" 2>/dev/null || {
+		printf '%s: %s does not exist and cannot be created\n' "${0##*/}" "$root" >&2
+		exit 1
+	}
+fi
+if [[ ! -w $root ]]; then
+	printf '%s: %s is not writable.\n' "${0##*/}" "$root" >&2
+	printf ' Fresh ZFS datasets mount root-owned. Fix with:\n' >&2
+	printf '  sudo chown %s: %s\n' "${USER:-$LOGNAME}" "$root" >&2
+	exit 1
+fi
+
+# Commands that accept --target-dir (checked against cargo 1.99.1). Anything
+# else -- metadata, tree, fetch, update, vendor, new, ... -- takes no target
+# directory and is passed through untouched.
+case ${1:-} in
+build | check | clean | clippy | test | bench | run | doc | fix | rustc | rustdoc | install | publish | package) ;;
+*)
+	exec cargo "$@"
+	;;
+esac
+
+# An explicit --target-dir wins; do not fight the caller.
+for arg in "$@"; do
+	case $arg in
+	--target-dir | --target-dir=*)
+		printf '%s: --target-dir already given, passing through\n' "${0##*/}" >&2
+		exec cargo "$@"
+		;;
+	esac
+done
+
+src=$PWD
+# Name the directory after the git repo (readable) but hash the exact source
+# path, so two checkouts with the same basename never share a target tree.
+gitroot=$(git rev-parse --show-toplevel 2>/dev/null) || gitroot=$src
+name=$(basename -- "$gitroot")
+key="$name-$(printf '%s' "$src" | sha1sum | cut -c1-6)"
+target="$root/$key/cargo-target"
+
+printf '%s: source %s\n%s: target %s\n' "${0##*/}" "$src" "${0##*/}" "$target" >&2
+
+# Insert before any trailing `--` so test/run arguments stay argument-only.
+args=()
+inserted=0
+for arg in "$@"; do
+	if [[ $arg == -- && $inserted -eq 0 ]]; then
+		args+=(--target-dir "$target")
+		inserted=1
+	fi
+	args+=("$arg")
+done
+((inserted)) || args+=(--target-dir "$target")
+
+exec cargo "${args[@]}"

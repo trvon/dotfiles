@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# mbuild - set up / reconfigure Meson out-of-tree into $BUILD_ROOT.
+#
+# Meson also has no global build-dir variable; the directory is an argument:
+#
+#   mbuild [meson setup args]      -> meson setup $BUILD_ROOT/<repo>-<hash> $PWD
+#   mbuild                         -> reconfigures if already set up
+#   ninja -C $BUILD_ROOT/<repo>-<hash>      (prints the dir it used)
+#
+# Why: $BUILD_ROOT is the zroot/home/build dataset with
+# com.sun:auto-snapshot=false, so build churn is never pinned by sanoid
+# snapshots. In-repo ./build trees still get snapshotted.
+#
+# Keep the key resolver in sync with ~/.local/bin/cbuild.
+set -euo pipefail
+
+root=${BUILD_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/build}
+
+if [[ ! -d $root ]]; then
+    mkdir -p "$root" 2>/dev/null || {
+        printf '%s: %s does not exist and cannot be created\n' "${0##*/}" "$root" >&2
+        exit 1
+    }
+fi
+if [[ ! -w $root ]]; then
+    printf '%s: %s is not writable.\n' "${0##*/}" "$root" >&2
+    printf '  Fresh ZFS datasets mount root-owned. Fix with:\n' >&2
+    printf '    sudo chown %s: %s\n' "${USER:-$LOGNAME}" "$root" >&2
+    exit 1
+fi
+
+src=$PWD
+gitroot=$(git rev-parse --show-toplevel 2>/dev/null) || gitroot=$src
+name=$(basename -- "$gitroot")
+key="$name-$(printf '%s' "$src" | sha1sum | cut -c1-6)"
+build="$root/$key"
+
+[[ -f $src/meson.build ]] || {
+    printf '%s: no meson.build in %s\n' "${0##*/}" "$src" >&2
+    exit 1
+}
+
+if [[ -f $build/build.ninja ]]; then
+    printf '%s: reconfiguring existing tree\n' "${0##*/}" >&2
+    exec meson setup --reconfigure "$build" "$src" "$@"
+fi
+
+printf '%s: source %s\n%s: build  %s\n' "${0##*/}" "$src" "${0##*/}" "$build" >&2
+exec meson setup "$build" "$src" "$@"
